@@ -6,7 +6,7 @@ import pandas as pd
 from datetime import datetime
 from streamlit_autorefresh import st_autorefresh
 
-# --- 1. 基础配置 ---
+# --- 1. 配置永久保存 ---
 CONFIG_FILE = "my_terminal_config_2026.json"
 
 def load_config():
@@ -22,49 +22,41 @@ def save_config():
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(cfg, f, ensure_ascii=False, indent=4)
 
-# --- 2. 页面设置 ---
+# --- 2. 页面配置 ---
 st.set_page_config(page_title="2026 战略终端", layout="wide")
-st_autorefresh(interval=300000, key="ui_fix_refresh")
+st_autorefresh(interval=300000, key="full_feat_refresh")
 
 if 'my_sectors' not in st.session_state:
     cfg = load_config()
-    st.session_state.my_sectors, st.session_state.my_notes = cfg["sectors"], cfg["notes"]
+    st.session_state.my_sectors = cfg["sectors"]
+    st.session_state.my_notes = cfg.get("notes", {})
 
 # --- 3. 核心：分时曲线 SVG 引擎 ---
 def get_sparkline_svg(prices, color="green"):
-    """生成紧凑、无乱码的分时曲线"""
     if len(prices) < 2: return ""
     width, height = 160, 45
     p_min, p_max = min(prices), max(prices)
     if p_max == p_min: p_max += 0.01
-    
     pts = []
     for i, p in enumerate(prices):
         x = (i / (len(prices) - 1)) * width
         y = height - ((p - p_min) / (p_max - p_min) * height)
         pts.append(f"{x:.1f},{y:.1f}")
-    
     path_data = " ".join(pts)
-    # 使用单行 HTML 字符串，防止 Streamlit 解析出 </div> 字符
-    svg = f'<svg width="{width}" height="{height}" style="display:block;margin:5px 0;"><path d="M 0,{height} L {path_data} L {width},{height} Z" fill="{color}" fill-opacity="0.1" stroke="none"/><polyline points="{path_data}" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>'
-    return svg
+    return f'<svg width="{width}" height="{height}" style="display:block;margin:5px 0;"><path d="M 0,{height} L {path_data} L {width},{height} Z" fill="{color}" fill-opacity="0.1" stroke="none"/><polyline points="{path_data}" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>'
 
 # --- 4. 数据抓取逻辑 ---
 @st.cache_data(ttl=300)
-def fetch_terminal_data():
-    etfs = {"半导体(SOXX)": "SOXX", "人工智能(AIQ)": "AIQ", "金融(XLF)": "XLF", "能源(XLE)": "XLE", "中概(KWEB)": "KWEB", "科技(QQQ)": "QQQ"}
-    s_results = []
-    for name, symbol in etfs.items():
-        try:
-            d = yf.download(symbol, period="2d", interval="15m", progress=False)
-            if d.columns.nlevels > 1: d.columns = d.columns.get_level_values(0)
-            c_last, c_first = float(d['Close'].iloc[-1]), float(d['Close'].iloc[0])
-            s_results.append({"name": name, "chg": ((c_last - c_first)/c_first)*100})
-        except: s_results.append({"name": name, "chg": 0.0})
-    
+def fetch_terminal_data(sector_config):
+    # 获取基准板块 (SOXX)
+    try:
+        bench = yf.download("SOXX", period="2d", interval="15m", progress=False)
+        if bench.columns.nlevels > 1: bench.columns = bench.columns.get_level_values(0)
+        bench_chg = ((bench['Close'].iloc[-1] - bench['Close'].iloc[0])/bench['Close'].iloc[0])*100
+    except: bench_chg = 0.0
+
     m_data = []
-    bench_chg = s_results[0]['chg']
-    for sec_name, tickers in st.session_state.my_sectors.items():
+    for sec_name, tickers in sector_config.items():
         for t in tickers:
             try:
                 obj = yf.Ticker(t)
@@ -86,18 +78,59 @@ def fetch_terminal_data():
                     "total_288d": ((latest_c - h['Close'].iloc[0])/h['Close'].iloc[0])*100 if len(h)>=288 else 0
                 })
             except: pass
-    return s_results, m_data
+    return bench_chg, m_data
 
-# --- 5. 渲染逻辑 ---
+# --- 5. 侧边栏：功能全回归 ---
+with st.sidebar:
+    st.header("⚙️ 终端控制")
+    
+    # 找回：板块管理
+    with st.expander("📁 板块编辑 (添加/删除)"):
+        new_s = st.text_input("新建板块名称")
+        if st.button("创建新板块"):
+            if new_s and new_s not in st.session_state.my_sectors:
+                st.session_state.my_sectors[new_s] = []
+                save_config(); st.rerun()
+        
+        del_s = st.selectbox("选择要删除的板块", [""] + list(st.session_state.my_sectors.keys()))
+        if st.button("确定删除该板块"):
+            if del_s:
+                del st.session_state.my_sectors[del_s]
+                save_config(); st.rerun()
+
+    st.divider()
+    
+    # 股票添加
+    st.subheader("➕ 添加个股")
+    if st.session_state.my_sectors:
+        target_s = st.selectbox("选择目标板块", list(st.session_state.my_sectors.keys()))
+        nt = st.text_input("输入股票代码 (如: NVDA)")
+        if st.button("加入自选"):
+            if nt and target_s:
+                st.session_state.my_sectors[target_s].append(nt.upper())
+                save_config(); st.rerun()
+    else:
+        st.warning("请先创建一个板块")
+
+    st.divider()
+    
+    # 投资笔记
+    st.subheader("📝 投资逻辑")
+    all_ts = [t for ts in st.session_state.my_sectors.values() for t in ts]
+    if all_ts:
+        edit_t = st.selectbox("选择股票编辑笔记", options=list(set(all_ts)))
+        note = st.text_area("输入核心逻辑", value=st.session_state.my_notes.get(edit_t, ""), height=150)
+        if st.button("保存笔记"):
+            st.session_state.my_notes[edit_t] = note
+            save_config(); st.success("已保存")
+
+# --- 6. 界面渲染 ---
 st.write("### 🏛️ 战略资产监控终端")
-with st.spinner("正在同步 288 日周期数据..."):
-    s_res, m_res = fetch_terminal_data()
+with st.spinner("同步实时行情与 288 日周期..."):
+    bench_val, m_res = fetch_terminal_data(st.session_state.my_sectors)
 
-# 顶部板块
-cols = st.columns(6)
-for i, s in enumerate(s_res):
-    with cols[i]:
-        st.markdown(f"<div style='text-align:center; border:1px solid #eee; border-radius:8px; padding:5px;'><div style='font-size:0.75rem; color:gray;'>{s['name']}</div><div style='color:{'green' if s['chg']>=0 else 'red'}; font-weight:bold;'>{s['chg']:+.2f}%</div></div>", unsafe_allow_html=True)
+# 简易版顶部板块强度
+st.markdown(f"**当前市场基准 (SOXX) 强度: <span style='color:{'green' if bench_val>=0 else 'red'};'>{bench_val:+.2f}%</span>**", unsafe_allow_html=True)
 
 st.divider()
 
@@ -111,18 +144,17 @@ with l_col:
                     with st.container(border=True):
                         c1, c2, c3 = st.columns([1.6, 4.4, 0.3])
                         with c1:
-                            # --- 【重构点】：整合左侧信息块 ---
-                            delta_color = "green" if s['change'] >= 0 else "red"
-                            rs_color = "#008000" if s['rs'] > 0 else "#FF0000"
+                            delta_cl = "green" if s['change'] >= 0 else "red"
+                            rs_cl = "#008000" if s['rs'] > 0 else "#FF0000"
                             st.markdown(f"""
                             <div style="line-height:1.2;">
                                 <div style="font-size:1.8rem; font-weight:800;">{s['ticker']}</div>
                                 <div style="margin:8px 0;">{s['spark']}</div>
                                 <div style="display:flex; align-items:baseline; gap:8px;">
                                     <span style="font-size:1.4rem; font-weight:700;">${s['price']:.2f}</span>
-                                    <span style="color:{delta_color}; font-weight:bold;">{s['change']:+.2f}%</span>
+                                    <span style="color:{delta_cl}; font-weight:bold;">{s['change']:+.2f}%</span>
                                 </div>
-                                <div style="font-size:0.85rem; margin-top:5px; color:{rs_color}; font-weight:600;">相对板块: {s['rs']:+.2f}%</div>
+                                <div style="font-size:0.85rem; margin-top:5px; color:{rs_cl}; font-weight:600;">相对板块: {s['rs']:+.2f}%</div>
                             </div>
                             """, unsafe_allow_html=True)
                         
@@ -134,12 +166,12 @@ with l_col:
                                 with h_cols[idx-1]:
                                     cur, pre = h_data.iloc[idx], h_data.iloc[idx-1]
                                     day_chg = ((cur['Close']-pre['Close'])/pre['Close'])*100
-                                    border = "2px solid #FFD700" if day_chg > (s_res[0]['chg']/5) else "1px solid #eee"
+                                    border = "2px solid #FFD700" if day_chg > (bench_val/5) else "1px solid #eee"
                                     st.markdown(f"<div style='text-align:center; background:rgba(0,0,0,0.02); border:{border}; border-radius:6px; padding:5px;'><div style='font-size:0.7rem; color:gray;'>{h_data.index[idx].strftime('%m-%d')}</div><div style='color:{'green' if day_chg>=0 else 'red'}; font-weight:bold; font-size:1.0rem;'>{day_chg:+.1f}%</div><div style='font-size:0.8rem;'>${cur['Close']:.1f}</div></div>", unsafe_allow_html=True)
-                            # 总结条
+                            
                             st.markdown(f"<div style='margin-top:10px; padding:8px; background:rgba(0,0,0,0.03); border-radius:8px; border:1px dashed #ccc; font-size:0.9rem;'>📊 5日: <b>{s['total_5d']:+.2f}%</b> | 144日: <b>{s['total_144d']:+.1f}%</b> | 288日: <b>{s['total_288d']:+.1f}%</b></div>", unsafe_allow_html=True)
-                            with st.expander("📖 投资逻辑"): 
-                                st.write(st.session_state.my_notes.get(s['ticker'], "暂无逻辑内容。"))
+                            with st.expander("📖 投资笔记"): 
+                                st.write(st.session_state.my_notes.get(s['ticker'], "暂无笔记内容。"))
                         with c3:
                             if st.button("🗑️", key=f"del_{s['ticker']}"):
                                 st.session_state.my_sectors[s_name].remove(s['ticker']); save_config(); st.rerun()
@@ -150,18 +182,6 @@ with r_col:
     keys = ['total_5d', 'total_144d', 'total_288d']
     for i, k in enumerate(keys):
         with b_tab[i]:
-            for idx, item in enumerate(sorted(m_res, key=lambda x: x[k], reverse=True)):
+            sorted_m = sorted(m_res, key=lambda x: x[k], reverse=True)
+            for idx, item in enumerate(sorted_m):
                 st.markdown(f"<div style='display:flex; justify-content:space-between; padding:5px 0; border-bottom:1px solid #f0f0f0;'><span>{idx+1}. <b>{item['ticker']}</b></span><span style='color:{'green' if item[k]>=0 else 'red'};'>{item[k]:+.1f}%</span></div>", unsafe_allow_html=True)
-
-with st.sidebar:
-    st.header("⚙️ 终端控制")
-    nt = st.text_input("添加股票代码")
-    if st.button("确定添加"):
-        first_s = list(st.session_state.my_sectors.keys())[0]
-        st.session_state.my_sectors[first_s].append(nt.upper()); save_config(); st.rerun()
-    st.divider()
-    all_edit = [t for ts in st.session_state.my_sectors.values() for t in ts]
-    edit_t = st.selectbox("编辑逻辑", options=list(set(all_edit)))
-    note = st.text_area("投资逻辑", value=st.session_state.my_notes.get(edit_t, ""), height=150)
-    if st.button("保存笔记"):
-        st.session_state.my_notes[edit_t] = note; save_config(); st.success("已保存")
