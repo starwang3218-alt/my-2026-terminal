@@ -6,7 +6,7 @@ import pandas as pd
 from datetime import datetime
 from streamlit_autorefresh import st_autorefresh
 
-# --- 1. 配置管理 (数据保险箱：写死你的核心标的) ---
+# --- 1. 配置管理 (核心：写死你的战略资产，防止更新丢数据) ---
 CONFIG_FILE = "my_terminal_config_2026.json"
 
 def load_config():
@@ -17,18 +17,19 @@ def load_config():
         except: pass
     return {
         "sectors": {
-            "光通信/AI算力": ["CRDO", "AAOI", "NVDA", "AMD"],
-            "工业/机械": ["MKSI"],
             "量子科技/康波底座": ["IONQ", "XNDU", "RGTI", "QBTS"],
             "稀土/战略金属": ["MP", "UAMY", "USAR", "ALM"],
-            "军工AI/决策软件": ["BBAI"]
+            "军工AI/决策软件": ["BBAI"],
+            "光通信/AI算力": ["CRDO", "AAOI", "NVDA", "AMD"],
+            "工业/机械": ["MKSI"]
         },
         "benchmarks": {
-            "光通信/AI算力": "SOXX", "工业/机械": "XLI", "量子科技/康波底座": "ARKK", "稀土/战略金属": "REMX", "军工AI/决策软件": "ITA"
+            "量子科技/康波底座": "ARKK", "稀土/战略金属": "REMX", "军工AI/决策软件": "ITA", "光通信/AI算力": "SOXX", "工业/机械": "XLI"
         },
         "notes": {
-            "BBAI": "3.32附近震荡，属于决策AI。国防订单确定性高。",
-            "UAMY": "美国本土锑业，军工咽喉资源，2027限制令直接受益。"
+            "BBAI": "3.32附近震荡，属于决策AI。国防订单确定性高，关注288日周期反转。",
+            "UAMY": "美国本土锑业，军工咽喉资源，2027限制令直接受益标的。",
+            "XNDU": "光量子路径，常温运行优势。PennyLane生态核心。"
         }
     }
 
@@ -57,11 +58,12 @@ def get_sparkline_svg(prices, color="green"):
     path_data = " ".join(pts)
     return f'<svg width="{w}" height="{h}" style="display:block;margin:5px 0;"><path d="M 0,{h} L {path_data} L {w},{h} Z" fill="{color}" fill-opacity="0.1" stroke="none"/><polyline points="{path_data}" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>'
 
-# --- 4. 数据抓取 ---
+# --- 4. 数据抓取与 Alpha 计算 ---
 @st.cache_data(ttl=300)
 def fetch_terminal_data(sector_cfg, bench_cfg):
     bench_results = {}
-    all_needed_bench = set(["SOXX", "AIQ", "XLI", "XLU", "KWEB", "REMX", "ITA", "ARKK"]) | set(bench_cfg.values())
+    core_radar = ["SOXX", "AIQ", "XLI", "XLU", "KWEB", "REMX", "ITA", "ARKK"]
+    all_needed_bench = set(core_radar) | set(bench_cfg.values())
     for b_sym in all_needed_bench:
         try:
             d = yf.download(b_sym, period="2d", interval="15m", progress=False)
@@ -91,27 +93,42 @@ def fetch_terminal_data(sector_cfg, bench_cfg):
             except: pass
     return bench_results, m_data
 
-# --- 5. 侧边栏 ---
+# --- 5. 侧边栏交互 (笔记功能回归) ---
 with st.sidebar:
     st.header("⚙️ 终端控制")
     if st.button("🔄 立即刷新数据", type="primary", use_container_width=True):
         st.cache_data.clear(); st.rerun()
     st.divider()
-    with st.expander("📁 板块管理"):
-        ns, nb = st.text_input("板块名"), st.text_input("对标 ETF")
-        if st.button("创建"):
+    
+    with st.expander("📁 板块与个股管理"):
+        ns, nb = st.text_input("新建板块名"), st.text_input("对标 ETF")
+        if st.button("创建板块"):
             if ns and nb: st.session_state.my_sectors[ns] = []; st.session_state.my_benchmarks[ns] = nb.upper(); save_config(); st.rerun()
-    st.subheader("➕ 添加个股")
-    if st.session_state.my_sectors:
-        ts, nt = st.selectbox("选择板块", list(st.session_state.my_sectors.keys())), st.text_input("代码")
-        if st.button("加入"):
-            if nt: st.session_state.my_sectors[ts].append(nt.upper()); save_config(); st.rerun()
+        st.divider()
+        if st.session_state.my_sectors:
+            ts, nt = st.selectbox("选择板块", list(st.session_state.my_sectors.keys())), st.text_input("添加股票代码")
+            if st.button("确认加入"):
+                if nt: st.session_state.my_sectors[ts].append(nt.upper()); save_config(); st.rerun()
 
-# --- 6. 渲染 ---
+    st.divider()
+    # 🌟 【找回笔记模块】
+    st.subheader("📝 投资笔记编辑")
+    all_tickers = list(set([t for ts in st.session_state.my_sectors.values() for t in ts]))
+    if all_tickers:
+        edit_t = st.selectbox("选择个股记录逻辑", options=sorted(all_tickers))
+        current_note = st.session_state.my_notes.get(edit_t, "")
+        new_note = st.text_area("长线博弈逻辑 (288日周期)", value=current_note, height=180)
+        if st.button("💾 保存笔记内容", use_container_width=True):
+            st.session_state.my_notes[edit_t] = new_note
+            save_config()
+            st.success(f"{edit_t} 笔记已同步")
+
+# --- 6. 主界面渲染 ---
 st.write("### 🏛️ 战略资产监控终端")
 with st.status("正在同步实时数据...", expanded=False):
     b_res, m_res = fetch_terminal_data(st.session_state.my_sectors, st.session_state.my_benchmarks)
 
+# 顶部雷达
 st.subheader("📡 核心板块资金雷达 (Net Flow)")
 r_cols = st.columns(6)
 for idx, sym in enumerate(["SOXX", "AIQ", "XLI", "XLU", "KWEB", "REMX"]):
@@ -131,12 +148,12 @@ with l_col:
                     with st.container(border=True):
                         c1, c2, c3 = st.columns([1.6, 4.4, 0.3])
                         with c1:
-                            # --- 【修复核心】：找回并强化 TradingView 深度链接 ---
+                            # 深度 K 线链接 (使用你的专属布局 MdN4tzco)
                             d_cl, rs_cl = ("green" if s['change'] >= 0 else "red"), ("#008000" if s['rs'] > 0 else "#FF0000")
                             st.markdown(f"<div style='line-height:1.2;'><div style='font-size:1.8rem; font-weight:800;'>{s['ticker']}</div><div style='margin:5px 0;'>{s['spark']}</div><div style='display:flex; align-items:baseline; gap:8px;'><span style='font-size:1.5rem; font-weight:700;'>${s['price']:.2f}</span><span style='color:{d_cl}; font-weight:bold;'>{s['change']:+.2f}%</span></div><div style='font-size:0.85rem; margin-top:5px; color:{rs_cl}; font-weight:600;'>相对 {s['bench']}: {s['rs']:+.2f}%</div></div>", unsafe_allow_html=True)
                             
-                            # 点击此处直接跳转到 TradingView 的 K 线图
-                            st.link_button(f"📊 {s['ticker']} 深度 K 线", f"https://www.tradingview.com/symbols/{s['ticker']}/", use_container_width=True)
+                            tv_url = f"https://www.tradingview.com/chart/MdN4tzco/?symbol={s['ticker']}"
+                            st.link_button(f"📈 {s['ticker']} 实战图表", tv_url, use_container_width=True)
                             
                         with c2:
                             h_cols = st.columns(5)
@@ -147,7 +164,9 @@ with l_col:
                                     border = "2px solid #FFD700" if d_chg > (b_res.get(s['bench'], {"chg":0})['chg']/5) else "1px solid #eee"
                                     st.markdown(f"<div style='text-align:center; background:rgba(0,0,0,0.02); border:{border}; border-radius:6px; padding:5px;'><div style='font-size:0.7rem; color:gray;'>{s['history'].index[idx].strftime('%m-%d')}</div><div style='color:{'green' if d_chg>=0 else 'red'}; font-weight:bold; font-size:1.0rem;'>{d_chg:+.1f}%</div><div style='font-size:0.8rem;'>${cur['Close']:.1f}</div></div>", unsafe_allow_html=True)
                             st.markdown(f"<div style='margin-top:10px; padding:8px; background:rgba(0,0,0,0.03); border-radius:8px; border:1px dashed #ccc; font-size:0.9rem;'>📊 5日: <b>{s['total_5d']:+.2f}%</b> | 144日: <b>{s['total_144d']:+.1f}%</b> | 288日: <b>{s['total_288d']:+.1f}%</b></div>", unsafe_allow_html=True)
-                            with st.expander("📖 深度投资逻辑"): st.write(st.session_state.my_notes.get(s['ticker'], "暂无逻辑内容。"))
+                            # 这里的 expander 会显示你在侧边栏保存的内容
+                            with st.expander("📖 深度投资逻辑"): 
+                                st.write(st.session_state.my_notes.get(s['ticker'], "暂无笔记逻辑。请在左侧边栏添加。"))
                         with c3:
                             if st.button("🗑️", key=f"del_{s['ticker']}"): st.session_state.my_sectors[s_name].remove(s['ticker']); save_config(); st.rerun()
 
