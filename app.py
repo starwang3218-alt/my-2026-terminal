@@ -6,8 +6,8 @@ import pandas as pd
 from datetime import datetime
 from streamlit_autorefresh import st_autorefresh
 
-# --- 1. 动态配置 (包含 AppLovin - APP) ---
-CONFIG_FILE = "strategy_terminal_2026_fixed.json"
+# --- 1. 配置管理 ---
+CONFIG_FILE = "my_terminal_config_2026.json"
 
 def load_config():
     if os.path.exists(CONFIG_FILE):
@@ -17,17 +17,13 @@ def load_config():
         except: pass
     return {
         "sectors": {
-            "数字媒体/AdTech": ["APP", "TTD", "MGNI", "SRAD"], # APP 归位
-            "AI算力/物理层": ["NVDA", "AVGO", "VICR", "TTMI", "CRDO"],
-            "军工/航电精工": ["BBAI", "ISSC", "LOAR"],
-            "AI应用/SaaS": ["HUBS", "PEGA", "GDYN", "TUYA"],
-            "身份安全/基建": ["MITK", "TSSI"],
-            "周期/能源/居住": ["MP", "AMPY", "KE"],
-            "量子/康波底座": ["IONQ", "XNDU", "RGTI"]
+            "AI/算力核心": ["NVDA", "AVGO", "APP", "VICR", "CRDO"],
+            "军工/航电": ["BBAI", "ISSC", "LOAR"],
+            "量子/康波底座": ["IONQ", "XNDU"],
+            "周期/资产": ["MP", "AMPY", "KE"]
         },
         "benchmarks": {
-            "数字媒体/AdTech": "XLC", "AI算力/物理层": "SOXX", "军工/航电精工": "ITA", 
-            "AI应用/SaaS": "IGV", "身份安全/基建": "QQQ", "周期/能源/居住": "XOP", "量子/康波底座": "ARKK"
+            "AI/算力核心": "SOXX", "军工/航电": "ITA", "量子/康波底座": "ARKK", "周期/资产": "XOP"
         },
         "notes": {}
     }
@@ -37,114 +33,142 @@ def save_config():
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(cfg, f, ensure_ascii=False, indent=4)
 
-# --- 2. 核心：强制标量提取函数 (解决 ValueError) ---
-def to_scalar(val):
-    """确保返回的是纯数字而非 Pandas Series"""
-    if isinstance(val, (pd.Series, pd.DataFrame)):
-        return float(val.iloc[0]) if not val.empty else 0.0
-    return float(val)
+# --- 2. 初始化 ---
+st.set_page_config(page_title="2026 战略终端", layout="wide")
+st_autorefresh(interval=300000, key="global_fixed_refresh")
 
-def get_financials(ticker_obj):
-    try:
-        q_fin = ticker_obj.quarterly_financials
-        if q_fin.empty: return "N/A", "N/A"
-        rev_label = 'Total Revenue' if 'Total Revenue' in q_fin.index else q_fin.index[0]
-        rev_series = q_fin.loc[rev_label]
-        ttm_growth = "N/A"
-        if len(rev_series) >= 8:
-            cur_ttm = rev_series.iloc[0:4].sum()
-            pri_ttm = rev_series.iloc[4:8].sum()
-            ttm_growth = f"{((cur_ttm - pri_ttm) / pri_ttm) * 100:+.1f}%"
-        eps_val = "N/A"
-        if 'Diluted EPS' in q_fin.index:
-            latest_eps = q_fin.loc['Diluted EPS'].iloc[0:4].sum()
-            eps_val = f"${latest_eps:.2f}"
-        return ttm_growth, eps_val
-    except: return "N/A", "N/A"
-
-# --- 3. 初始化 ---
-st.set_page_config(page_title="2026 战略终端 2.1", layout="wide")
-st_autorefresh(interval=600000, key="fixed_ref")
+RADAR_NAMES = {"SOXX": "半导体/芯片", "AIQ": "人工智能/AI", "XLI": "工业/机械", "XLU": "核能/公用事业", "KWEB": "中概互联", "REMX": "稀土/战略金属"}
 
 if 'my_sectors' not in st.session_state:
     cfg = load_config()
-    st.session_state.my_sectors, st.session_state.my_benchmarks, st.session_state.my_notes = cfg["sectors"], cfg["benchmarks"], cfg.get("notes", {})
+    st.session_state.my_sectors, st.session_state.my_benchmarks, st.session_state.my_notes = cfg["sectors"], cfg.get("benchmarks", {}), cfg.get("notes", {})
 
-# --- 4. 侧边栏 ---
-with st.sidebar:
-    st.title("🛡️ 终端控制台")
-    if st.button("🔄 刷新全部数据", type="primary", use_container_width=True):
-        st.cache_data.clear(); st.rerun()
-    st.divider()
-    all_tickers = sorted(list(set([t for ts in st.session_state.my_sectors.values() for t in ts])))
-    if all_tickers:
-        target = st.selectbox("📝 编辑笔记逻辑", all_tickers)
-        note_content = st.text_area("288日博弈思维", value=st.session_state.my_notes.get(target, ""), height=200)
-        if st.button("💾 保存", use_container_width=True):
-            st.session_state.my_notes[target] = note_content
-            save_config(); st.success("已保存")
+# --- 3. 核心工具 ---
+def get_sparkline_svg(prices, color="green"):
+    if not prices or len(prices) < 2: return ""
+    w, h = 160, 40
+    p_min, p_max = min(prices), max(prices)
+    if p_max == p_min: p_max += 0.01
+    pts = [f"{(i/(len(prices)-1))*w:.1f},{h-((p-p_min)/(p_max-p_min)*h):.1f}" for i,p in enumerate(prices)]
+    path_data = " ".join(pts)
+    return f'<svg width="{w}" height="{h}" style="display:block;margin:5px 0;"><path d="M 0,{h} L {path_data} L {w},{h} Z" fill="{color}" fill-opacity="0.1" stroke="none"/><polyline points="{path_data}" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>'
 
-# --- 5. 数据采集 (解决歧义的核心逻辑) ---
-@st.cache_data(ttl=600)
-def fetch_all_data(sectors, benchmarks):
-    m_data = []
-    b_res = {}
-    for b_sym in set(benchmarks.values()):
+@st.cache_data(ttl=300)
+def fetch_terminal_data(sector_cfg, bench_cfg):
+    bench_results = {}
+    core_radar = ["SOXX", "AIQ", "XLI", "XLU", "KWEB", "REMX"]
+    all_needed_bench = set(core_radar) | set(bench_cfg.values())
+    
+    for b_sym in all_needed_bench:
         try:
-            d = yf.download(b_sym, period="2d", interval="1d", progress=False)
-            if not d.empty:
-                # 强制转换为标量 float
-                c_last = to_scalar(d['Close'].iloc[-1])
-                c_prev = to_scalar(d['Close'].iloc[0])
-                b_res[b_sym] = ((c_last - c_prev) / c_prev) * 100
-        except: b_res[b_sym] = 0.0
-
-    for s_name, tickers in sectors.items():
-        b_chg = b_res.get(benchmarks.get(s_name), 0.0)
+            d = yf.download(b_sym, period="2d", interval="15m", progress=False)
+            if isinstance(d.columns, pd.MultiIndex): d.columns = d.columns.get_level_values(0)
+            c_last = float(d['Close'].iloc[-1])
+            c_first = float(d['Close'].iloc[0])
+            bench_results[b_sym] = {"chg": ((c_last-c_first)/c_first)*100, "flow": (c_last-c_first)*float(d['Volume'].sum())/1e10}
+        except: bench_results[b_sym] = {"chg": 0.0, "flow": 0.0}
+    
+    m_data = []
+    for sec_name, tickers in sector_cfg.items():
+        b_sym = bench_cfg.get(sec_name, "SPY")
+        b_chg = bench_results.get(b_sym, {"chg": 0.0})["chg"]
         for t in tickers:
             try:
                 obj = yf.Ticker(t)
                 h = obj.history(period="2y")
-                if h.empty: continue
-                # 核心：确保所有指标都是 float
-                l_c = to_scalar(h['Close'].iloc[-1])
-                p_c = to_scalar(h['Close'].iloc[-2])
-                t_chg = ((l_c - p_c) / p_c) * 100
-                ttm, eps = get_financials(obj)
+                intra = obj.history(period="1d", interval="15m")
+                if isinstance(h.columns, pd.MultiIndex): h.columns = h.columns.get_level_values(0)
+                if isinstance(intra.columns, pd.MultiIndex): intra.columns = intra.columns.get_level_values(0)
+                
+                latest_c = float(h['Close'].iloc[-1])
+                prev_c = float(h['Close'].iloc[-2])
+                today_chg = ((latest_c - prev_c)/prev_c)*100
                 
                 m_data.append({
-                    "ticker": t, "sector": s_name, "price": l_c, "change": t_chg, 
-                    "rs": float(t_chg - b_chg), # 强制转换
-                    "ttm": ttm, "eps": eps,
-                    "5d": to_scalar(((l_c - h['Close'].iloc[-6]) / h['Close'].iloc[-6]) * 100) if len(h)>6 else 0,
-                    "288d": to_scalar(((l_c - h['Close'].iloc[0]) / h['Close'].iloc[0]) * 100)
+                    "ticker": t, "sector": sec_name, "bench": b_sym, "price": latest_c, "change": today_chg, "rs": today_chg - b_chg,
+                    "spark": get_sparkline_svg(intra['Close'].tolist(), "green" if today_chg>=0 else "red"),
+                    "history": h.tail(6), 
+                    "total_5d": ((latest_c - h['Close'].iloc[-6])/h['Close'].iloc[-6])*100,
+                    "total_144d": ((latest_c - h['Close'].iloc[-145])/h['Close'].iloc[-145])*100 if len(h)>=145 else 0,
+                    "total_288d": ((latest_c - h['Close'].iloc[0])/h['Close'].iloc[0])*100 if len(h)>=288 else 0
                 })
             except: pass
-    return m_data
+    return bench_results, m_data
 
-# 渲染
-m_res = fetch_all_data(st.session_state.my_sectors, st.session_state.my_benchmarks)
+# --- 4. 侧边栏交互 ---
+with st.sidebar:
+    st.header("⚙️ 终端控制")
+    if st.button("🔄 刷新行情数据", type="primary", use_container_width=True):
+        st.cache_data.clear(); st.rerun()
+    st.divider()
+    
+    with st.expander("📁 板块管理"):
+        ns, nb = st.text_input("新建板块名"), st.text_input("对标 ETF (如 SOXX)")
+        if st.button("创建板块"):
+            if ns and nb: st.session_state.my_sectors[ns] = []; st.session_state.my_benchmarks[ns] = nb.upper(); save_config(); st.rerun()
+    
+    with st.expander("➕ 添加个股"):
+        if st.session_state.my_sectors:
+            ts = st.selectbox("选择板块", list(st.session_state.my_sectors.keys()))
+            nt = st.text_input("股票代码 (如 APP)")
+            if st.button("确认加入"):
+                if nt: st.session_state.my_sectors[ts].append(nt.upper()); save_config(); st.rerun()
 
-st.header("🏟️ 2026 战略资产实时矩阵")
-tabs = st.tabs(list(st.session_state.my_sectors.keys()))
-for i, s_name in enumerate(st.session_state.my_sectors.keys()):
-    with tabs[i]:
-        cols = st.columns(2)
-        for idx, s in enumerate([x for x in m_res if x['sector'] == s_name]):
-            with cols[idx % 2]:
-                with st.container(border=True):
-                    c1, c2 = st.columns([1, 2])
-                    with c1:
-                        # 现在的 s['rs'] 是 float 了，不会再报 ValueError
-                        color = "green" if s['change'] >= 0 else "red"
-                        rs_color = "green" if s['rs'] > 0 else "red"
-                        st.markdown(f"### {s['ticker']}")
-                        st.markdown(f"<h2 style='color:{color};'>${s['price']:.2f}</h2>", unsafe_allow_html=True)
-                        st.write(f"当日: **{s['change']:+.2f}%**")
-                        st.markdown(f"相对强度: <span style='color:{rs_color};'>{s['rs']:+.2f}%</span>", unsafe_allow_html=True)
-                        st.link_button("📈 实战图表", f"https://www.tradingview.com/chart/MdN4tzco/?symbol={s['ticker']}")
-                    with c2:
-                        st.info(f"**TTM营收增率**: {s['ttm']}\n\n**摊薄EPS**: {s['eps']}")
-                        st.write(f"5日战力: {s['5d']:+.1f}% | 288日战力: {s['288d']:+.1f}%")
-                        with st.expander("📖 深度投资逻辑"):
-                            st.write(st.session_state.my_notes.get(s['ticker'], "暂无笔记。"))
+    st.divider()
+    st.subheader("📝 投资笔记")
+    all_tickers = sorted(list(set([t for ts in st.session_state.my_sectors.values() for t in ts])))
+    if all_tickers:
+        edit_t = st.selectbox("选择个股", all_tickers)
+        new_note = st.text_area("288日博弈逻辑", value=st.session_state.my_notes.get(edit_t, ""), height=150)
+        if st.button("💾 保存笔记"):
+            st.session_state.my_notes[edit_t] = new_note
+            save_config(); st.success("已保存")
+
+# --- 5. 渲染 ---
+st.write("### 🏛️ 战略资产监控终端 (2026)")
+with st.status("同步全球市场数据...", expanded=False):
+    b_res, m_res = fetch_terminal_data(st.session_state.my_sectors, st.session_state.my_benchmarks)
+
+# 顶部雷达
+r_cols = st.columns(6)
+for idx, sym in enumerate(["SOXX", "AIQ", "XLI", "XLU", "KWEB", "REMX"]):
+    with r_cols[idx]:
+        d = b_res.get(sym, {"chg": 0.0, "flow": 0.0})
+        st.markdown(f"<div style='text-align:center; border:1px solid #eee; border-radius:10px; padding:8px; background:white;'><div style='font-size:0.8rem; font-weight:bold;'>{RADAR_NAMES[sym]}</div><div style='font-size:1rem; color:{'green' if d['chg']>=0 else 'red'}; font-weight:700;'>{d['chg']:+.2f}%</div></div>", unsafe_allow_html=True)
+
+st.divider()
+
+l_col, r_col = st.columns([4, 1.3])
+with l_col:
+    if st.session_state.my_sectors:
+        tabs = st.tabs(list(st.session_state.my_sectors.keys()))
+        for i, s_name in enumerate(st.session_state.my_sectors.keys()):
+            with tabs[i]:
+                for s in [x for x in m_res if x['sector'] == s_name]:
+                    with st.container(border=True):
+                        c1, c2, c3 = st.columns([1.6, 4.4, 0.4])
+                        with c1:
+                            st.markdown(f"<div style='line-height:1.2;'><div style='font-size:1.6rem; font-weight:800;'>{s['ticker']}</div><div style='margin:5px 0;'>{s['spark']}</div><div style='font-size:1.3rem; font-weight:700;'>${s['price']:.2f}</div><div style='color:{'green' if s['change']>=0 else 'red'}; font-weight:bold;'>{s['change']:+.2f}%</div></div>", unsafe_allow_html=True)
+                            st.link_button("📈 实战图表", f"https://www.tradingview.com/chart/MdN4tzco/?symbol={s['ticker']}")
+                        with c2:
+                            h_cols = st.columns(5)
+                            for idx in range(1, 6):
+                                with h_cols[idx-1]:
+                                    cur, pre = s['history'].iloc[idx], s['history'].iloc[idx-1]
+                                    d_chg = ((cur['Close']-pre['Close'])/pre['Close'])*100
+                                    st.markdown(f"<div style='text-align:center; background:rgba(0,0,0,0.02); border-radius:5px; padding:3px;'><div style='font-size:0.7rem; color:gray;'>{s['history'].index[idx].strftime('%m-%d')}</div><div style='color:{'green' if d_chg>=0 else 'red'}; font-weight:bold;'>{d_chg:+.1f}%</div></div>", unsafe_allow_html=True)
+                            st.markdown(f"<div style='margin-top:10px; padding:6px; background:rgba(0,0,0,0.03); border-radius:6px; font-size:0.85rem;'>📊 <b>5日: {s['total_5d']:+.2f}%</b> | <b>288日: {s['total_288d']:+.1f}%</b></div>", unsafe_allow_html=True)
+                            with st.expander("📖 笔记逻辑"):
+                                st.write(st.session_state.my_notes.get(s['ticker'], "点击左侧边栏添加笔记。"))
+                        with c3:
+                            if st.button("🗑️", key=f"del_{s['ticker']}"): st.session_state.my_sectors[s_name].remove(s['ticker']); save_config(); st.rerun()
+
+with r_col:
+    st.subheader("🏆 战力排行")
+    b_tabs = st.tabs(["今日", "5日", "288日"])
+    m_keys = ['change', 'total_5d', 'total_288d']
+    for idx, key in enumerate(m_keys):
+        with b_tabs[idx]:
+            sorted_res = sorted(m_res, key=lambda x: x[key], reverse=True)
+            for i, item in enumerate(sorted_res):
+                st.markdown(f"<div style='display:flex; justify-content:space-between; padding:3px 0; border-bottom:1px solid #f9f9f9; font-size:0.9rem;'><span>{i+1}. <b>{item['ticker']}</b></span><span style='color:{'green' if item[key]>=0 else 'red'}; font-weight:bold;'>{item[key]:+.1f}%</span></div>", unsafe_allow_html=True)
