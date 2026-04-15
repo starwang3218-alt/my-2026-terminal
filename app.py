@@ -6,7 +6,7 @@ import pandas as pd
 from datetime import datetime
 from streamlit_autorefresh import st_autorefresh
 
-# --- 1. 配置永久保存 ---
+# --- 1. 配置管理 ---
 CONFIG_FILE = "my_terminal_config_2026.json"
 
 def load_config():
@@ -24,7 +24,8 @@ def save_config():
 
 # --- 2. 页面配置 ---
 st.set_page_config(page_title="2026 战略终端", layout="wide")
-st_autorefresh(interval=300000, key="full_feat_refresh")
+# 自动刷新保持 5 分钟
+st_autorefresh(interval=300000, key="global_auto_refresh")
 
 if 'my_sectors' not in st.session_state:
     cfg = load_config()
@@ -45,13 +46,13 @@ def get_sparkline_svg(prices, color="green"):
     path_data = " ".join(pts)
     return f'<svg width="{width}" height="{height}" style="display:block;margin:5px 0;"><path d="M 0,{height} L {path_data} L {width},{height} Z" fill="{color}" fill-opacity="0.1" stroke="none"/><polyline points="{path_data}" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>'
 
-# --- 4. 数据抓取逻辑 ---
+# --- 4. 真实数据抓取 (缓存机制) ---
 @st.cache_data(ttl=300)
-def fetch_terminal_data(sector_config):
-    # 获取基准板块 (SOXX)
+def fetch_real_data(sector_config):
+    # 抓取 SOXX 作为基准
     try:
         bench = yf.download("SOXX", period="2d", interval="15m", progress=False)
-        if bench.columns.nlevels > 1: bench.columns = bench.columns.get_level_values(0)
+        if isinstance(bench.columns, pd.MultiIndex): bench.columns = bench.columns.get_level_values(0)
         bench_chg = ((bench['Close'].iloc[-1] - bench['Close'].iloc[0])/bench['Close'].iloc[0])*100
     except: bench_chg = 0.0
 
@@ -60,10 +61,10 @@ def fetch_terminal_data(sector_config):
         for t in tickers:
             try:
                 obj = yf.Ticker(t)
-                h = obj.history(period="2y")
-                intra = obj.history(period="1d", interval="15m")
-                if h.columns.nlevels > 1: h.columns = h.columns.get_level_values(0)
-                if intra.columns.nlevels > 1: intra.columns = intra.columns.get_level_values(0)
+                h = obj.history(period="2y") # 288日计算需要
+                intra = obj.history(period="1d", interval="15m") # 分时图需要
+                if isinstance(h.columns, pd.MultiIndex): h.columns = h.columns.get_level_values(0)
+                if isinstance(intra.columns, pd.MultiIndex): intra.columns = intra.columns.get_level_values(0)
                 
                 latest_c = float(h['Close'].iloc[-1])
                 today_chg = ((latest_c - float(h['Close'].iloc[-2]))/float(h['Close'].iloc[-2]))*100
@@ -80,57 +81,49 @@ def fetch_terminal_data(sector_config):
             except: pass
     return bench_chg, m_data
 
-# --- 5. 侧边栏：功能全回归 ---
+# --- 5. 侧边栏：刷新、板块、笔记 ---
 with st.sidebar:
     st.header("⚙️ 终端控制")
     
-    # 找回：板块管理
-    with st.expander("📁 板块编辑 (添加/删除)"):
-        new_s = st.text_input("新建板块名称")
-        if st.button("创建新板块"):
-            if new_s and new_s not in st.session_state.my_sectors:
-                st.session_state.my_sectors[new_s] = []
-                save_config(); st.rerun()
-        
-        del_s = st.selectbox("选择要删除的板块", [""] + list(st.session_state.my_sectors.keys()))
-        if st.button("确定删除该板块"):
-            if del_s:
-                del st.session_state.my_sectors[del_s]
-                save_config(); st.rerun()
+    # 【新增】：强制刷新按钮
+    if st.button("🔄 立即刷新数据", use_container_width=True, type="primary"):
+        st.cache_data.clear() # 清空所有已缓存的行情
+        st.rerun() # 立即重启脚本
+    st.caption("点击将绕过 5 分钟缓存，强制获取最新实时数据。")
+    
+    st.divider()
+
+    with st.expander("📁 板块管理"):
+        new_s = st.text_input("新建板块名")
+        if st.button("创建"):
+            if new_s: st.session_state.my_sectors[new_s] = []; save_config(); st.rerun()
+        ds = st.selectbox("删除板块", [""] + list(st.session_state.my_sectors.keys()))
+        if st.button("确定删除"):
+            if ds: del st.session_state.my_sectors[ds]; save_config(); st.rerun()
+
+    st.subheader("➕ 添加代码")
+    t_sec = st.selectbox("目标板块", list(st.session_state.my_sectors.keys()))
+    nt = st.text_input("代码 (如: CRDO)")
+    if st.button("确定加入"):
+        if nt and t_sec:
+            st.session_state.my_sectors[t_sec].append(nt.upper()); save_config(); st.rerun()
 
     st.divider()
-    
-    # 股票添加
-    st.subheader("➕ 添加个股")
-    if st.session_state.my_sectors:
-        target_s = st.selectbox("选择目标板块", list(st.session_state.my_sectors.keys()))
-        nt = st.text_input("输入股票代码 (如: NVDA)")
-        if st.button("加入自选"):
-            if nt and target_s:
-                st.session_state.my_sectors[target_s].append(nt.upper())
-                save_config(); st.rerun()
-    else:
-        st.warning("请先创建一个板块")
-
-    st.divider()
-    
-    # 投资笔记
     st.subheader("📝 投资逻辑")
     all_ts = [t for ts in st.session_state.my_sectors.values() for t in ts]
     if all_ts:
-        edit_t = st.selectbox("选择股票编辑笔记", options=list(set(all_ts)))
-        note = st.text_area("输入核心逻辑", value=st.session_state.my_notes.get(edit_t, ""), height=150)
+        edit_t = st.selectbox("编辑笔记", options=list(set(all_ts)))
+        note = st.text_area("核心逻辑", value=st.session_state.my_notes.get(edit_t, ""), height=150)
         if st.button("保存笔记"):
-            st.session_state.my_notes[edit_t] = note
-            save_config(); st.success("已保存")
+            st.session_state.my_notes[edit_t] = note; save_config(); st.success("已保存")
 
 # --- 6. 界面渲染 ---
 st.write("### 🏛️ 战略资产监控终端")
-with st.spinner("同步实时行情与 288 日周期..."):
-    bench_val, m_res = fetch_terminal_data(st.session_state.my_sectors)
+with st.status("同步全球行情与 288 日大周期...", expanded=False) as status:
+    bench_val, m_res = fetch_real_data(st.session_state.my_sectors)
+    status.update(label="行情数据已更新", state="complete")
 
-# 简易版顶部板块强度
-st.markdown(f"**当前市场基准 (SOXX) 强度: <span style='color:{'green' if bench_val>=0 else 'red'};'>{bench_val:+.2f}%</span>**", unsafe_allow_html=True)
+st.markdown(f"**市场基准 (SOXX) 今日强度: <span style='color:{'green' if bench_val>=0 else 'red'};'>{bench_val:+.2f}%</span>**", unsafe_allow_html=True)
 
 st.divider()
 
@@ -144,22 +137,18 @@ with l_col:
                     with st.container(border=True):
                         c1, c2, c3 = st.columns([1.6, 4.4, 0.3])
                         with c1:
-                            delta_cl = "green" if s['change'] >= 0 else "red"
-                            rs_cl = "#008000" if s['rs'] > 0 else "#FF0000"
                             st.markdown(f"""
                             <div style="line-height:1.2;">
                                 <div style="font-size:1.8rem; font-weight:800;">{s['ticker']}</div>
                                 <div style="margin:8px 0;">{s['spark']}</div>
                                 <div style="display:flex; align-items:baseline; gap:8px;">
                                     <span style="font-size:1.4rem; font-weight:700;">${s['price']:.2f}</span>
-                                    <span style="color:{delta_cl}; font-weight:bold;">{s['change']:+.2f}%</span>
+                                    <span style="color:{'green' if s['change']>=0 else 'red'}; font-weight:bold;">{s['change']:+.2f}%</span>
                                 </div>
-                                <div style="font-size:0.85rem; margin-top:5px; color:{rs_cl}; font-weight:600;">相对板块: {s['rs']:+.2f}%</div>
-                            </div>
-                            """, unsafe_allow_html=True)
+                                <div style="font-size:0.85rem; margin-top:5px; color:{'#008000' if s['rs']>0 else '#FF0000'}; font-weight:600;">相对板块: {s['rs']:+.2f}%</div>
+                            </div>""", unsafe_allow_html=True)
                         
                         with c2:
-                            # 5日小方块
                             h_cols = st.columns(5)
                             h_data = s['history']
                             for idx in range(1, 6):
