@@ -6,7 +6,7 @@ import pandas as pd
 from datetime import datetime
 from streamlit_autorefresh import st_autorefresh
 
-# --- 1. 配置管理系统 ---
+# --- 1. 配置管理 (这里就是你的数据保险箱) ---
 CONFIG_FILE = "my_terminal_config_2026.json"
 
 def load_config():
@@ -15,46 +15,41 @@ def load_config():
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
         except: pass
-    # 默认初始配置
+    
+    # 💡 王先生，以后你有新看好的板块，直接填在下面这个 return 字典里
+    # 这样无论服务器怎么重启，你的数据都在代码里“永生”
     return {
         "sectors": {
-            "光通信": ["CRDO", "AAOI"], 
-            "AI算力": ["NVDA", "AMD"],
-            "工业机械": ["MKSI"],
-            "稀土战略": ["MP"]
+            "光通信/AI算力": ["CRDO", "AAOI", "NVDA", "AMD"],
+            "工业/机械": ["MKSI"],
+            "量子科技/康波底座": ["IONQ", "XNDU", "RGTI", "QBTS"],
+            "稀土/战略金属": ["MP", "UAMY", "USAR", "ALM"],
+            "军工AI/决策软件": ["BBAI"]
         },
         "benchmarks": {
-            "光通信": "SOXX",
-            "AI算力": "SOXX",
-            "工业机械": "XLI",
-            "稀土战略": "REMX"
+            "光通信/AI算力": "SOXX",
+            "工业/机械": "XLI",
+            "量子科技/康波底座": "ARKK",
+            "稀土/战略金属": "REMX",
+            "军工AI/决策软件": "ITA"
         },
-        "notes": {}
+        "notes": {
+            "BBAI": "3.32附近震荡，属于决策AI。国防订单确定性高，对标ITA。",
+            "XNDU": "2026年3月上市的光量子龙头。常温运行优势，PennyLane生态核心。",
+            "UAMY": "美国本土锑业，军工咽喉资源，2027限制令直接受益标的。"
+        }
     }
 
 def save_config():
-    cfg = {
-        "sectors": st.session_state.my_sectors, 
-        "benchmarks": st.session_state.my_benchmarks,
-        "notes": st.session_state.my_notes
-    }
+    cfg = {"sectors": st.session_state.my_sectors, "benchmarks": st.session_state.my_benchmarks, "notes": st.session_state.my_notes}
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(cfg, f, ensure_ascii=False, indent=4)
 
-# --- 2. 页面初始化 ---
+# --- 2. 初始化 ---
 st.set_page_config(page_title="2026 战略终端", layout="wide")
-st_autorefresh(interval=300000, key="global_terminal_refresh")
+st_autorefresh(interval=300000, key="global_fixed_refresh")
 
-# 核心板块中文映射
-RADAR_NAMES = {
-    "SOXX": "半导体/芯片",
-    "AIQ":  "人工智能/AI",
-    "XLI":  "工业/机械",
-    "XLU":  "核能/公用事业",
-    "KWEB": "中概互联/科技",
-    "REMX": "稀土/战略金属",
-    "SPY":  "标普500大盘"
-}
+RADAR_NAMES = {"SOXX": "半导体/芯片", "AIQ": "人工智能/AI", "XLI": "工业/机械", "XLU": "核能/公用事业", "KWEB": "中概互联/科技", "REMX": "稀土/战略金属"}
 
 if 'my_sectors' not in st.session_state:
     cfg = load_config()
@@ -70,33 +65,27 @@ def get_sparkline_svg(prices, color="green"):
     if p_max == p_min: p_max += 0.01
     pts = [f"{(i/(len(prices)-1))*w:.1f},{h-((p-p_min)/(p_max-p_min)*h):.1f}" for i,p in enumerate(prices)]
     path_data = " ".join(pts)
-    # 使用单引号属性避免 HTML 解析冲突
     return f'<svg width="{w}" height="{h}" style="display:block;margin:5px 0;"><path d="M 0,{h} L {path_data} L {w},{h} Z" fill="{color}" fill-opacity="0.1" stroke="none"/><polyline points="{path_data}" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>'
 
-# --- 4. 数据抓取与 Alpha 计算 ---
+# --- 4. 数据抓取 ---
 @st.cache_data(ttl=300)
 def fetch_terminal_data(sector_cfg, bench_cfg):
-    # A. 抓取雷达与基准
     bench_results = {}
-    core_radar_list = ["SOXX", "AIQ", "XLI", "XLU", "KWEB", "REMX"]
-    # 合并用户自定义的基准代码
-    all_needed_bench = set(core_radar_list) | set(bench_cfg.values())
+    core_radar = ["SOXX", "AIQ", "XLI", "XLU", "KWEB", "REMX", "ITA", "ARKK"]
+    all_needed_bench = set(core_radar) | set(bench_cfg.values())
     
     for b_sym in all_needed_bench:
         try:
             d = yf.download(b_sym, period="2d", interval="15m", progress=False)
             if isinstance(d.columns, pd.MultiIndex): d.columns = d.columns.get_level_values(0)
             c_last, c_first = float(d['Close'].iloc[-1]), float(d['Close'].iloc[0])
-            flow = (c_last - c_first) * float(d['Volume'].sum()) / 1e10
-            bench_results[b_sym] = {"chg": ((c_last - c_first)/c_first)*100, "flow": flow}
+            bench_results[b_sym] = {"chg": ((c_last-c_first)/c_first)*100, "flow": (c_last-c_first)*float(d['Volume'].sum())/1e10}
         except: bench_results[b_sym] = {"chg": 0.0, "flow": 0.0}
     
-    # B. 抓取个股联动数据
     m_data = []
     for sec_name, tickers in sector_cfg.items():
         b_sym = bench_cfg.get(sec_name, "SPY")
         b_chg = bench_results.get(b_sym, {"chg": 0.0})["chg"]
-        
         for t in tickers:
             try:
                 obj = yf.Ticker(t)
@@ -104,10 +93,8 @@ def fetch_terminal_data(sector_cfg, bench_cfg):
                 intra = obj.history(period="1d", interval="15m")
                 if isinstance(h.columns, pd.MultiIndex): h.columns = h.columns.get_level_values(0)
                 if isinstance(intra.columns, pd.MultiIndex): intra.columns = intra.columns.get_level_values(0)
-                
                 latest_c = float(h['Close'].iloc[-1])
                 today_chg = ((latest_c - float(h['Close'].iloc[-2]))/float(h['Close'].iloc[-2]))*100
-                
                 m_data.append({
                     "ticker": t, "sector": sec_name, "bench": b_sym, "price": latest_c, "change": today_chg,
                     "rs": today_chg - b_chg,
@@ -120,71 +107,46 @@ def fetch_terminal_data(sector_cfg, bench_cfg):
             except: pass
     return bench_results, m_data
 
-# --- 5. 侧边栏交互界面 ---
+# --- 5. 侧边栏 ---
 with st.sidebar:
     st.header("⚙️ 终端控制")
     if st.button("🔄 立即刷新数据", type="primary", use_container_width=True):
-        st.cache_data.clear()
-        st.rerun()
-    
+        st.cache_data.clear(); st.rerun()
     st.divider()
-    with st.expander("📁 自定义板块与基准", expanded=False):
-        new_s = st.text_input("新建板块名称 (如: 稀土战略)")
-        new_b = st.text_input("对标 ETF 代码 (如: REMX)")
-        if st.button("立即创建板块"):
-            if new_s and new_b:
-                st.session_state.my_sectors[new_s] = []
-                st.session_state.my_benchmarks[new_s] = new_b.upper()
-                save_config(); st.rerun()
-        
-        del_s = st.selectbox("删除已有板块", [""] + list(st.session_state.my_sectors.keys()))
-        if st.button("确定删除"):
-            if del_s:
-                del st.session_state.my_sectors[del_s]
-                save_config(); st.rerun()
-
-    st.subheader("➕ 添加个股资产")
+    with st.expander("📁 板块管理"):
+        ns, nb = st.text_input("板块名"), st.text_input("对标 ETF")
+        if st.button("创建"):
+            if ns and nb: st.session_state.my_sectors[ns] = []; st.session_state.my_benchmarks[ns] = nb.upper(); save_config(); st.rerun()
+        ds = st.selectbox("删除板块", [""] + list(st.session_state.my_sectors.keys()))
+        if st.button("删除"):
+            if ds: del st.session_state.my_sectors[ds]; save_config(); st.rerun()
+    st.subheader("➕ 添加个股")
     if st.session_state.my_sectors:
-        target_s = st.selectbox("选择所属板块", list(st.session_state.my_sectors.keys()))
-        nt = st.text_input("股票代码 (如: CRDO)")
-        if st.button("确定加入自选"):
-            if nt:
-                st.session_state.my_sectors[target_s].append(nt.upper())
-                save_config(); st.rerun()
-
+        ts = st.selectbox("选择板块", list(st.session_state.my_sectors.keys()))
+        nt = st.text_input("代码")
+        if st.button("加入"):
+            if nt: st.session_state.my_sectors[ts].append(nt.upper()); save_config(); st.rerun()
     st.divider()
     st.subheader("📝 投资笔记")
     all_ts = [t for ts in st.session_state.my_sectors.values() for t in ts]
     if all_ts:
-        edit_t = st.selectbox("选择个股编辑", options=list(set(all_ts)))
-        note_text = st.text_area("长线投资逻辑", value=st.session_state.my_notes.get(edit_t, ""), height=150)
-        if st.button("保存笔记"):
-            st.session_state.my_notes[edit_t] = note_text
-            save_config(); st.success("笔记已同步")
+        et = st.selectbox("选择股票", options=list(set(all_ts)))
+        note = st.text_area("长线逻辑", value=st.session_state.my_notes.get(et, ""), height=150)
+        if st.button("保存笔记"): st.session_state.my_notes[et] = note; save_config(); st.success("已保存")
 
-# --- 6. 主界面渲染 ---
-st.write("### 🏛️ 战略资产监控终端 (2026 生产版)")
-
-with st.status("正在同步全球实时行情...", expanded=False) as status:
+# --- 6. 渲染 ---
+st.write("### 🏛️ 战略资产监控终端")
+with st.status("正在同步实时数据...", expanded=False) as status:
     b_res, m_res = fetch_terminal_data(st.session_state.my_sectors, st.session_state.my_benchmarks)
-    status.update(label="数据同步完成", state="complete")
+    status.update(label="同步完成", state="complete")
 
-# 顶部：核心板块资金雷达
 st.subheader("📡 核心板块资金雷达 (Net Flow)")
 r_cols = st.columns(6)
-core_radar_list = ["SOXX", "AIQ", "XLI", "XLU", "KWEB", "REMX"]
-for idx, sym in enumerate(core_radar_list):
+for idx, sym in enumerate(["SOXX", "AIQ", "XLI", "XLU", "KWEB", "REMX"]):
     with r_cols[idx]:
-        data = b_res.get(sym, {"chg": 0.0, "flow": 0.0})
-        cl_val = "green" if data['chg'] >= 0 else "red"
-        disp_name = RADAR_NAMES.get(sym, sym)
-        st.markdown(f"""
-        <div style='text-align:center; border:1px solid #eee; border-radius:12px; padding:10px; background:white; box-shadow: 0 2px 4px rgba(0,0,0,0.05);'>
-            <div style='font-size:0.85rem; color:#333; font-weight:bold;'>{disp_name}</div>
-            <div style='font-size:1.1rem; color:{cl_val}; font-weight:900;'>{data['chg']:+.2f}%</div>
-            <div style='font-size:0.75rem; color:#666; margin-top:5px;'>流向: <b>{data['flow']:+.1f}M</b></div>
-        </div>
-        """, unsafe_allow_html=True)
+        d = b_res.get(sym, {"chg": 0.0, "flow": 0.0})
+        cl = "green" if d['chg'] >= 0 else "red"
+        st.markdown(f"<div style='text-align:center; border:1px solid #eee; border-radius:12px; padding:10px; background:white;'><div style='font-size:0.85rem; font-weight:bold;'>{RADAR_NAMES[sym]}</div><div style='font-size:1.1rem; color:{cl}; font-weight:900;'>{d['chg']:+.2f}%</div><div style='font-size:0.75rem; color:#666;'>流向: <b>{d['flow']:+.1f}M</b></div></div>", unsafe_allow_html=True)
 
 st.divider()
 
@@ -198,45 +160,29 @@ with l_col:
                     with st.container(border=True):
                         c1, c2, c3 = st.columns([1.6, 4.4, 0.3])
                         with c1:
-                            d_cl = "green" if s['change'] >= 0 else "red"
-                            rs_cl = "#008000" if s['rs'] > 0 else "#FF0000"
-                            st.markdown(f"""
-                            <div style="line-height:1.2;">
-                                <div style="font-size:1.8rem; font-weight:800;">{s['ticker']}</div>
-                                <div style="margin:5px 0;">{s['spark']}</div>
-                                <div style="display:flex; align-items:baseline; gap:8px;">
-                                    <span style="font-size:1.5rem; font-weight:700;">${s['price']:.2f}</span>
-                                    <span style="color:{d_cl}; font-weight:bold;">{s['change']:+.2f}%</span>
-                                </div>
-                                <div style="font-size:0.85rem; margin-top:5px; color:{rs_cl}; font-weight:600;">相对 {s['bench']}: {s['rs']:+.2f}%</div>
-                            </div>""", unsafe_allow_html=True)
+                            d_cl, rs_cl = ("green" if s['change'] >= 0 else "red"), ("#008000" if s['rs'] > 0 else "#FF0000")
+                            st.markdown(f"<div style='line-height:1.2;'><div style='font-size:1.8rem; font-weight:800;'>{s['ticker']}</div><div style='margin:5px 0;'>{s['spark']}</div><div style='display:flex; align-items:baseline; gap:8px;'><span style='font-size:1.5rem; font-weight:700;'>${s['price']:.2f}</span><span style='color:{d_cl}; font-weight:bold;'>{s['change']:+.2f}%</span></div><div style='font-size:0.85rem; margin-top:5px; color:{rs_cl}; font-weight:600;'>相对 {s['bench']}: {s['rs']:+.2f}%</div></div>", unsafe_allow_html=True)
                         with c2:
                             h_cols = st.columns(5)
                             for idx in range(1, 6):
                                 with h_cols[idx-1]:
                                     cur, pre = s['history'].iloc[idx], s['history'].iloc[idx-1]
                                     d_chg = ((cur['Close']-pre['Close'])/pre['Close'])*100
-                                    box_cl = "green" if d_chg >= 0 else "red"
-                                    # 联动边框逻辑
-                                    b_val = b_res.get(s['bench'], {"chg":0})['chg']
-                                    border = "2px solid #FFD700" if d_chg > (b_val/5) else "1px solid #eee"
-                                    st.markdown(f"<div style='text-align:center; background:rgba(0,0,0,0.02); border:{border}; border-radius:6px; padding:5px;'><div style='font-size:0.7rem; color:gray;'>{s['history'].index[idx].strftime('%m-%d')}</div><div style='color:{box_cl}; font-weight:bold; font-size:1.0rem;'>{d_chg:+.1f}%</div><div style='font-size:0.8rem;'>${cur['Close']:.1f}</div></div>", unsafe_allow_html=True)
-                            
+                                    border = "2px solid #FFD700" if d_chg > (b_res.get(s['bench'], {"chg":0})['chg']/5) else "1px solid #eee"
+                                    st.markdown(f"<div style='text-align:center; background:rgba(0,0,0,0.02); border:{border}; border-radius:6px; padding:5px;'><div style='font-size:0.7rem; color:gray;'>{s['history'].index[idx].strftime('%m-%d')}</div><div style='color:{'green' if d_chg>=0 else 'red'}; font-weight:bold; font-size:1.0rem;'>{d_chg:+.1f}%</div><div style='font-size:0.8rem;'>${cur['Close']:.1f}</div></div>", unsafe_allow_html=True)
                             st.markdown(f"<div style='margin-top:10px; padding:8px; background:rgba(0,0,0,0.03); border-radius:8px; border:1px dashed #ccc; font-size:0.9rem;'>📊 5日: <b>{s['total_5d']:+.2f}%</b> | 144日: <b>{s['total_144d']:+.1f}%</b> | 288日: <b>{s['total_288d']:+.1f}%</b></div>", unsafe_allow_html=True)
-                            with st.expander("📖 深度投资逻辑"): 
-                                st.write(st.session_state.my_notes.get(s['ticker'], "暂无逻辑内容。"))
+                            with st.expander("📖 深度投资逻辑"): st.write(st.session_state.my_notes.get(s['ticker'], "暂无逻辑内容。"))
                         with c3:
-                            if st.button("🗑️", key=f"del_{s['ticker']}"):
-                                st.session_state.my_sectors[s_name].remove(s['ticker']); save_config(); st.rerun()
+                            if st.button("🗑️", key=f"del_{s['ticker']}"): st.session_state.my_sectors[s_name].remove(s['ticker']); save_config(); st.rerun()
 
 with r_col:
     st.subheader("🏆 战力排行")
-    b_tabs = st.tabs(["5日", "144日", "288日"])
-    m_keys = ['total_5d', 'total_144d', 'total_288d']
+    # 💡 找回了【今日】排行
+    b_tabs = st.tabs(["今日", "5日", "144日", "288日"])
+    m_keys = ['change', 'total_5d', 'total_144d', 'total_288d']
     for idx, key in enumerate(m_keys):
         with b_tabs[idx]:
             sorted_res = sorted(m_res, key=lambda x: x[key], reverse=True)
             for i, item in enumerate(sorted_res):
-                v = item[key]
-                v_cl = "green" if v >= 0 else "red"
-                st.markdown(f"<div style='display:flex; justify-content:space-between; padding:5px 0; border-bottom:1px solid #f0f0f0;'><span>{i+1}. <b>{item['ticker']}</b></span><span style='color:{v_cl}; font-weight:bold;'>{v:+.1f}%</span></div>", unsafe_allow_html=True)
+                cl = "green" if item[key] >= 0 else "red"
+                st.markdown(f"<div style='display:flex; justify-content:space-between; padding:5px 0; border-bottom:1px solid #f0f0f0;'><span>{i+1}. <b>{item['ticker']}</b></span><span style='color:{cl}; font-weight:bold;'>{item[key]:+.1f}%</span></div>", unsafe_allow_html=True)
