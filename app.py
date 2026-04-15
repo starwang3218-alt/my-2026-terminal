@@ -25,7 +25,7 @@ def load_config():
         },
         "benchmarks": {
             "AI/算力核心": "SOXX", "军工/航行电子": "ITA", "量子/前沿科技": "QTUM", 
-            "硬资产/战略金属": "REMX", "能源/困境反转": "XOP", "中概/价值修复": "KWEB"
+            "硬资产/战略金属": "REMX", "中概/价值修复": "KWEB"
         },
         "notes": {}
     }
@@ -36,7 +36,7 @@ def save_config():
         json.dump(cfg, f, ensure_ascii=False, indent=4)
 
 # --- 2. 初始化 ---
-st.set_page_config(page_title="2026 战略终端 (Pro UI)", layout="wide")
+st.set_page_config(page_title="2026 战略终端 (Full Pro)", layout="wide")
 st_autorefresh(interval=300000, key="global_fixed_refresh")
 
 if 'my_sectors' not in st.session_state:
@@ -55,21 +55,20 @@ def get_sparkline_svg(prices, color="green"):
     p_min, p_max = min(prices), max(prices)
     if p_max == p_min: p_max += 0.01
     pts = [f"{(i/(len(prices)-1))*w:.1f},{h-((p-p_min)/(p_max-p_min)*h):.1f}" for i,p in enumerate(prices)]
-    path_data = " ".join(pts)
-    return f'<svg width="{w}" height="{h}"><path d="M 0,{h} L {path_data} L {w},{h} Z" fill="{color}" fill-opacity="0.1"/><polyline points="{path_data}" fill="none" stroke="{color}" stroke-width="2"/></svg>'
+    return f'<svg width="{w}" height="{h}"><path d="M 0,{h} L {pts[0]} {" ".join(pts)} L {w},{h} Z" fill="{color}" fill-opacity="0.1"/><polyline points="{" ".join(pts)}" fill="none" stroke="{color}" stroke-width="2"/></svg>'
 
 @st.cache_data(ttl=600)
 def fetch_all_sync(sectors, benchmarks):
     all_tickers = list(set([t for ts in sectors.values() for t in ts]))
     all_bench = list(set(benchmarks.values()) | {"SOXX", "AIQ", "XLI", "QTUM", "KWEB", "REMX"})
     
+    # 批量下载 (2年数据 + 分时)
     full_data = yf.download(all_tickers + all_bench, period="2y", interval="1d", group_by='ticker', progress=False)
     intra_data = yf.download(all_tickers, period="1d", interval="15m", group_by='ticker', progress=False)
 
-    results = []
-    b_res = {}
-    s_strength = {}
+    results, b_res, s_strength = [], {}, {}
 
+    # 1. 核心 Benchmark 雷达
     for b in all_bench:
         try:
             hist = full_data[b].dropna() if b in full_data else pd.DataFrame()
@@ -79,6 +78,7 @@ def fetch_all_sync(sectors, benchmarks):
             else: b_res[b] = {"chg": 0.0}
         except: b_res[b] = {"chg": 0.0}
 
+    # 2. 个股与板块强度
     for sec_name, tickers in sectors.items():
         b_sym = benchmarks.get(sec_name, "SPY")
         b_chg = b_res.get(b_sym, {"chg": 0.0})["chg"]
@@ -106,10 +106,10 @@ def fetch_all_sync(sectors, benchmarks):
     return b_res, results, s_strength
 
 # --- 4. UI 渲染 ---
-st.title("🏛️ 战略资产监控终端 (2026 Pro)")
+st.title("🏛️ 战略资产监控终端 (Turbo Pro)")
 
 with st.sidebar:
-    if st.button("🚀 强制全量刷新", type="primary", use_container_width=True):
+    if st.button("🚀 强制同步数据", type="primary", use_container_width=True):
         st.cache_data.clear(); st.rerun()
     st.divider()
     with st.expander("📁 架构管理"):
@@ -119,18 +119,19 @@ with st.sidebar:
         if st.session_state.my_sectors:
             ts = st.selectbox("选择板块", list(st.session_state.my_sectors.keys()))
             nt = st.text_input("代码")
-            if st.button("添加"):
+            if st.button("确认"):
                 if nt: st.session_state.my_sectors[ts].append(nt.upper()); save_config(); st.rerun()
     st.divider()
     all_t = sorted(list(set([t for ts in st.session_state.my_sectors.values() for t in ts])))
     if all_t:
         e_t = st.selectbox("笔记标的", all_t)
         st.session_state.my_notes[e_t] = st.text_area("博弈逻辑", value=st.session_state.my_notes.get(e_t, ""), height=150)
-        if st.button("💾 保存"): save_config(); st.success("已保存")
+        if st.button("💾 保存"): save_config(); st.success("已同步")
 
+# 数据抓取
 b_res, m_res, s_strength = fetch_all_sync(st.session_state.my_sectors, st.session_state.my_benchmarks)
 
-# 顶部雷达
+# 1. 顶部大盘雷达
 RADAR_NAMES = {"SOXX":"芯片","AIQ":"AI","XLI":"工业","QTUM":"量子","KWEB":"中概","REMX":"稀土"}
 r_cols = st.columns(len(RADAR_NAMES))
 for i, sym in enumerate(RADAR_NAMES.keys()):
@@ -138,8 +139,23 @@ for i, sym in enumerate(RADAR_NAMES.keys()):
         chg = b_res.get(sym, {"chg":0})["chg"]
         st.metric(RADAR_NAMES[sym], f"{chg:+.2f}%")
 
+# 2. 板块战力雷达 (找回的部分)
+st.subheader("📡 板块战力雷达 (Sector Alpha)")
+if s_strength:
+    s_cols = st.columns(len(s_strength))
+    for i, (name, v) in enumerate(s_strength.items()):
+        with s_cols[i]:
+            st.markdown(f"""
+                <div style='background:#f0f2f6; padding:10px; border-radius:10px; border-left:5px solid {'green' if v['alpha']>0 else 'red'};'>
+                    <div style='font-size:0.85rem; font-weight:bold;'>{name}</div>
+                    <div style='font-size:1.2rem; color:{'green' if v['avg_chg']>0 else 'red'}; font-weight:900;'>{v['avg_chg']:+.2f}%</div>
+                    <div style='font-size:0.75rem; color:gray;'>vs {v['bench']}: {v['alpha']:+.2f}%</div>
+                </div>
+            """, unsafe_allow_html=True)
+
 st.divider()
 
+# 3. 主赛道与排行
 l, r = st.columns([4, 1.3])
 with l:
     if st.session_state.my_sectors:
@@ -153,8 +169,7 @@ with l:
                             st.markdown(f"<div style='line-height:1.2;'><h3>{s['ticker']}</h3>{s['spark']}<h2 style='margin:10px 0;'>${s['price']:.2f}</h2><b style='color:{'green' if s['change']>=0 else 'red'}; font-size:1.1rem;'>{s['change']:+.2f}%</b></div>", unsafe_allow_html=True)
                             st.link_button("📈 图表", f"https://www.tradingview.com/chart/MdN4tzco/?symbol={s['ticker']}")
                         with c2:
-                            # 垂直对齐修正
-                            st.markdown("<div style='height:15px;'></div>", unsafe_allow_html=True)
+                            st.markdown("<div style='height:15px;'></div>", unsafe_allow_html=True) # 对齐占位
                             h_cols = st.columns(5)
                             for idx in range(1, 6):
                                 with h_cols[idx-1]:
@@ -162,7 +177,7 @@ with l:
                                     val_pre = to_scalar(s['history']['Close'].iloc[idx-1])
                                     d_chg = ((val_cur - val_pre) / val_pre) * 100
                                     color = "green" if d_chg >= 0 else "red"
-                                    # 🌟 强化后的历史区块：显示价格 + 字体加大
+                                    # 🌟 强化的 5 日历史区：日期 + 涨跌 + 收盘价
                                     st.markdown(f"""
                                         <div style='text-align:center; line-height:1.4;'>
                                             <div style='font-size:0.9rem; color:gray;'>{s['history'].index[idx].strftime('%m-%d')}</div>
