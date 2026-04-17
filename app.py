@@ -6,8 +6,8 @@ import pandas as pd
 from datetime import datetime
 from streamlit_autorefresh import st_autorefresh
 
-# --- 1. 配置管理：100+ 标的全量对齐 ---
-CONFIG_FILE = "strategy_terminal_ultra_pro_v8.json"
+# --- 1. 配置管理 ---
+CONFIG_FILE = "strategy_terminal_ultra_pro_v15.json"
 
 def load_config():
     if os.path.exists(CONFIG_FILE):
@@ -35,13 +35,7 @@ def load_config():
             "数字媒体": "XLC", "AI算力/应用": "IGV", "电力基建": "XLI", "航空精工/维修": "XAR"
         },
         "notes": {
-            "VICR": "GPU 供血泵。VPD 垂直供电解决 1000W+ 功耗瓶颈，AI 物理层核心标的。",
-            "CRDO": "算力网络‘神经纤维’。命门在 800G/1.6T 升级周期，RS 战力极强。",
-            "LOAR": "小号 TransDigm。40% EBITDA 利润率，并购垄断策略，强通胀转嫁能力。",
-            "BBAI": "防御 AI 算力。288 日周期处于深坑回补期，技术面‘地天泰’确认中。",
-            "HUBS": "SMB 数字大脑。Breeze AI 驱动 AI Agents 转型，按效果付费模式领跑者。",
-            "FTAI": "算力救急电源。退役航发改地面涡轮，Q4 交付数据中心，毛利 40%+。",
-            "BWXT": "核能心脏。垄断海军堆，Pele 微堆临界运行在即，数据中心脱网能源标杆。"
+            "PEGA": "### 🏛️ PEGA 深度解析：企业级 AI 的“重装装甲”\n\n**1. 核心定位**\nPEGA 的核心能力是 LPA 和实时决策。\n\n**2. 财务指标**\n- TTM 营收年增率: ~13% - 16%\n- Rule of 40: ~42%"
         }
     }
 
@@ -97,22 +91,70 @@ def fetch_all_data(sectors, benchmarks):
             except: pass
     return b_res, results
 
-# --- 新增：独立详情页渲染函数 ---
-def render_stock_page(ticker):
-    st.button("⬅️ 返回主盘", on_click=lambda: setattr(st.session_state, 'current_page', 'Dashboard'))
-    t_obj = yf.Ticker(ticker)
-    info = t_obj.info
-    st.title(f"{ticker} - {info.get('longName', '')}")
-    st.metric("实时价格", f"${info.get('currentPrice', 0)}", f"{info.get('regularMarketChangePercent', 0):+.2f}%")
+# --- 新增：沉浸式研报与编辑页 ---
+def render_stock_page(ticker, m_res):
+    st.button("⬅️ 返回战略大盘", on_click=lambda: setattr(st.session_state, 'current_page', 'Dashboard'))
+    
+    s = next((x for x in m_res if x['ticker'] == ticker), None)
+    if not s:
+        st.error("数据加载失败，请返回大盘重试。")
+        return
+
+    st.markdown(f"## 🎯 战术锁定：{s['ticker']}")
+    
+    # 完全复用主页的 UI 方块
+    with st.container(border=True):
+        c1, c2, c3 = st.columns([1.5, 4.5, 0.5])
+        with c1:
+            st.markdown(f"### {s['ticker']}")
+            st.markdown(f"<h2 style='margin:0;'>${s['price']:.2f}</h2>", unsafe_allow_html=True)
+            st.markdown(f"<b style='color:{'#28a745' if s['change']>=0 else '#dc3545'}; font-size:1.4rem;'>{s['change']:+.2f}%</b>", unsafe_allow_html=True)
+            st.link_button("📈 K线直达", f"https://www.tradingview.com/chart/?symbol={s['ticker']}")
+        
+        with c2:
+            h_cols = st.columns(5)
+            for idx in range(1, 6):
+                with h_cols[idx-1]:
+                    cur, pre = to_scalar(s['history']['Close'].iloc[idx]), to_scalar(s['history']['Close'].iloc[idx-1])
+                    d_chg = ((cur - pre) / pre) * 100
+                    color = "#28a745" if d_chg >= 0 else "#dc3545"
+                    st.markdown(f"""
+                        <div style='text-align:center; border: 1.5px solid #e2e8f0; padding: 10px; border-radius: 10px; background-color: #f8fafc; margin: 2px;'>
+                            <small style='color:#64748b;'>{s['history'].index[idx].strftime('%m-%d')}</small><br>
+                            <b style='color:{color}; font-size: 1.4rem;'>{d_chg:+.1f}%</b><br>
+                            <small style='font-weight:bold; font-size: 1.1rem;'>${cur:.1f}</small>
+                        </div>
+                    """, unsafe_allow_html=True)
+            
+            st.markdown(f"<div style='background:#f1f5f9; padding:10px; border-radius:8px; margin-top:15px; font-size:1rem; border-left:4px solid #3b82f6;'><b>5日累积: {s['t_5d']:+.2f}%</b> | 144日: <b>{s['t_144d']:+.1f}%</b> | 288日战力: <b>{s['t_288d']:+.1f}%</b></div>", unsafe_allow_html=True)
+
     st.divider()
-    st.components.v1.html(f'<div style="height:600px;"><div id="tv_chart"></div><script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script><script type="text/javascript">new TradingView.widget({{"autosize": true, "symbol": "{ticker}", "interval": "D", "theme": "light", "style": "1", "locale": "zh_CN", "container_id": "tv_chart"}});</script></div>', height=620)
+    
+    # 专属的编辑与显示区
+    st.markdown("### ✍️ 深度解析 (实时编辑)")
+    current_note = st.session_state.my_notes.get(ticker, "")
+    
+    # 左侧输入，右侧实时预览 Markdown
+    col_edit, col_preview = st.columns([1, 1])
+    with col_edit:
+        new_note = st.text_area(f"撰写 {ticker} 的博弈逻辑 (支持 Markdown)：", value=current_note, height=500)
+        if st.button("💾 保存解析内容", type="primary", use_container_width=True):
+            st.session_state.my_notes[ticker] = new_note
+            save_config()
+            st.success("✅ 笔记已永久保存！")
+    with col_preview:
+        st.markdown("**🔍 内容预览**")
+        with st.container(border=True, height=500):
+            if new_note:
+                st.markdown(new_note)
+            else:
+                st.info("暂无解析，在左侧输入内容后此处将自动排版显示。")
 
 # --- 3. 界面布局 ---
 with st.sidebar:
     st.header("⚙️ 终端管理")
     if st.button("🚀 刷新全量数据", type="primary", use_container_width=True): st.cache_data.clear(); st.rerun()
     
-    # 增加：板块编辑功能
     with st.expander("📁 板块编辑"):
         target_s = st.selectbox("当前板块", list(st.session_state.my_sectors.keys()))
         nt = st.text_input("添加代码")
@@ -128,25 +170,23 @@ with st.sidebar:
             
     st.divider()
     all_ts = sorted(list(set([t for ts in st.session_state.my_sectors.values() for t in ts])))
-    edit_t = st.selectbox("博弈逻辑库 (100+)", all_ts)
-    st.session_state.my_notes[edit_t] = st.text_area("核心博弈逻辑", value=st.session_state.my_notes.get(edit_t, ""), height=200)
-    if st.button("💾 永久保存笔记", use_container_width=True): save_config()
+    edit_t = st.selectbox("快速逻辑编辑 (侧栏)", all_ts)
+    st.session_state.my_notes[edit_t] = st.text_area("简易记录", value=st.session_state.my_notes.get(edit_t, ""), height=150)
+    if st.button("💾 保存侧栏笔记", use_container_width=True): save_config()
 
 b_res, m_res = fetch_all_data(st.session_state.my_sectors, st.session_state.my_benchmarks)
 
 # 页面路由切换
 if st.session_state.current_page == "StockPage":
-    render_stock_page(st.session_state.selected_stock)
+    render_stock_page(st.session_state.selected_stock, m_res)
 else:
     st.title("🏛️ 2026 战略资产终端 (Pro UI 重构)")
-    # 顶部雷达
     r_cols = st.columns(len(b_res))
     for i, (sym, val) in enumerate(b_res.items()):
         with r_cols[i]: st.metric(sym, f"{val['chg']:+.2f}%")
 
     st.divider()
 
-    # 主区域
     l_col, r_col = st.columns([3.5, 1.5])
 
     with l_col:
@@ -164,7 +204,6 @@ else:
                             st.link_button("📈 K线直达", f"https://www.tradingview.com/chart/?symbol={s['ticker']}")
                         
                         with c2:
-                            # 保持原状：五日涨跌幅 UI 方框
                             h_cols = st.columns(5)
                             for idx in range(1, 6):
                                 with h_cols[idx-1]:
@@ -190,15 +229,15 @@ else:
         st.subheader("🏆 全量战力排行榜")
         rank_tabs = st.tabs(["日内", "5日", "144d", "288d"])
         rank_keys = [('change', '今日'), ('t_5d', '5日'), ('t_144d', '144d'), ('t_288d', '288d')]
-        with st.container(height=900): # 100+ 标的全量滚动
+        with st.container(height=900): 
             for i, (key, label) in enumerate(rank_keys):
                 with rank_tabs[i]:
                     sorted_m = sorted(m_res, key=lambda x: x[key], reverse=True)
                     for j, item in enumerate(sorted_m):
                         val_color = "#dc3545" if item[key] < 0 else "#28a745"
-                        # 增加：股票代码变为可点击的链接按钮
                         c_rank, c_val = st.columns([3, 1])
                         with c_rank:
+                            # 核心：排行榜代码点击后，触发 current_page 切换
                             if st.button(f"{j+1}. {item['ticker']}", key=f"rk_{key}_{item['ticker']}"):
                                 st.session_state.selected_stock = item['ticker']
                                 st.session_state.current_page = "StockPage"
