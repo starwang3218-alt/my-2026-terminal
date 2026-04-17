@@ -57,6 +57,8 @@ st_autorefresh(interval=300000, key="global_refresh")
 if 'my_sectors' not in st.session_state:
     cfg = load_config()
     st.session_state.my_sectors, st.session_state.my_benchmarks, st.session_state.my_notes = cfg["sectors"], cfg["benchmarks"], cfg.get("notes", {})
+if 'current_page' not in st.session_state: st.session_state.current_page = "Dashboard"
+if 'selected_stock' not in st.session_state: st.session_state.selected_stock = None
 
 def to_scalar(val):
     if isinstance(val, (pd.Series, pd.DataFrame)):
@@ -95,12 +97,35 @@ def fetch_all_data(sectors, benchmarks):
             except: pass
     return b_res, results
 
-# --- 3. 界面布局 ---
-st.title("🏛️ 2026 战略资产终端 (Pro UI 重构)")
+# --- 新增：独立详情页渲染函数 ---
+def render_stock_page(ticker):
+    st.button("⬅️ 返回主盘", on_click=lambda: setattr(st.session_state, 'current_page', 'Dashboard'))
+    t_obj = yf.Ticker(ticker)
+    info = t_obj.info
+    st.title(f"{ticker} - {info.get('longName', '')}")
+    st.metric("实时价格", f"${info.get('currentPrice', 0)}", f"{info.get('regularMarketChangePercent', 0):+.2f}%")
+    st.divider()
+    st.components.v1.html(f'<div style="height:600px;"><div id="tv_chart"></div><script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script><script type="text/javascript">new TradingView.widget({{"autosize": true, "symbol": "{ticker}", "interval": "D", "theme": "light", "style": "1", "locale": "zh_CN", "container_id": "tv_chart"}});</script></div>', height=620)
 
+# --- 3. 界面布局 ---
 with st.sidebar:
     st.header("⚙️ 终端管理")
     if st.button("🚀 刷新全量数据", type="primary", use_container_width=True): st.cache_data.clear(); st.rerun()
+    
+    # 增加：板块编辑功能
+    with st.expander("📁 板块编辑"):
+        target_s = st.selectbox("当前板块", list(st.session_state.my_sectors.keys()))
+        nt = st.text_input("添加代码")
+        if st.button("➕ 添加"):
+            if nt: st.session_state.my_sectors[target_s].append(nt.upper()); save_config(); st.rerun()
+        st.divider()
+        ns = st.text_input("新板块名")
+        nb = st.text_input("对标 ETF")
+        if st.button("📂 创建"):
+            if ns: st.session_state.my_sectors[ns] = []; st.session_state.my_benchmarks[ns] = nb.upper(); save_config(); st.rerun()
+        if st.button("🗑️ 删除该板块", type="secondary"):
+            del st.session_state.my_sectors[target_s]; save_config(); st.rerun()
+            
     st.divider()
     all_ts = sorted(list(set([t for ts in st.session_state.my_sectors.values() for t in ts])))
     edit_t = st.selectbox("博弈逻辑库 (100+)", all_ts)
@@ -109,68 +134,75 @@ with st.sidebar:
 
 b_res, m_res = fetch_all_data(st.session_state.my_sectors, st.session_state.my_benchmarks)
 
-# 顶部雷达
-r_cols = st.columns(len(b_res))
-for i, (sym, val) in enumerate(b_res.items()):
-    with r_cols[i]: st.metric(sym, f"{val['chg']:+.2f}%")
+# 页面路由切换
+if st.session_state.current_page == "StockPage":
+    render_stock_page(st.session_state.selected_stock)
+else:
+    st.title("🏛️ 2026 战略资产终端 (Pro UI 重构)")
+    # 顶部雷达
+    r_cols = st.columns(len(b_res))
+    for i, (sym, val) in enumerate(b_res.items()):
+        with r_cols[i]: st.metric(sym, f"{val['chg']:+.2f}%")
 
-st.divider()
+    st.divider()
 
-# 主区域
-l_col, r_col = st.columns([3.5, 1.5])
+    # 主区域
+    l_col, r_col = st.columns([3.5, 1.5])
 
-with l_col:
-    tabs = st.tabs(list(st.session_state.my_sectors.keys()))
-    for i, s_name in enumerate(st.session_state.my_sectors.keys()):
-        with tabs[i]:
-            sector_stocks = [x for x in m_res if x['sector'] == s_name]
-            for s in sector_stocks:
-                with st.container(border=True):
-                    c1, c2, c3 = st.columns([1.5, 4.5, 0.5])
-                    with c1:
-                        st.markdown(f"### {s['ticker']}")
-                        st.markdown(f"<h2 style='margin:0;'>${s['price']:.2f}</h2>", unsafe_allow_html=True)
-                        st.markdown(f"<b style='color:{'#28a745' if s['change']>=0 else '#dc3545'}; font-size:1.4rem;'>{s['change']:+.2f}%</b>", unsafe_allow_html=True)
-                        st.link_button("📈 K线直达", f"https://www.tradingview.com/chart/?symbol={s['ticker']}")
-                    
-                    with c2:
-                        # 重点优化：五日涨跌幅 UI 方框
-                        h_cols = st.columns(5)
-                        for idx in range(1, 6):
-                            with h_cols[idx-1]:
-                                cur, pre = to_scalar(s['history']['Close'].iloc[idx]), to_scalar(s['history']['Close'].iloc[idx-1])
-                                d_chg = ((cur - pre) / pre) * 100
-                                color = "#28a745" if d_chg >= 0 else "#dc3545"
-                                # 字体加大 + 方框 UI
-                                st.markdown(f"""
-                                    <div style='text-align:center; border: 1.5px solid #e2e8f0; padding: 10px; border-radius: 10px; background-color: #f8fafc; margin: 2px;'>
-                                        <small style='color:#64748b;'>{s['history'].index[idx].strftime('%m-%d')}</small><br>
-                                        <b style='color:{color}; font-size: 1.4rem;'>{d_chg:+.1f}%</b><br>
-                                        <small style='font-weight:bold; font-size: 1.1rem;'>${cur:.1f}</small>
-                                    </div>
-                                """, unsafe_allow_html=True)
+    with l_col:
+        tabs = st.tabs(list(st.session_state.my_sectors.keys()))
+        for i, s_name in enumerate(st.session_state.my_sectors.keys()):
+            with tabs[i]:
+                sector_stocks = [x for x in m_res if x['sector'] == s_name]
+                for s in sector_stocks:
+                    with st.container(border=True):
+                        c1, c2, c3 = st.columns([1.5, 4.5, 0.5])
+                        with c1:
+                            st.markdown(f"### {s['ticker']}")
+                            st.markdown(f"<h2 style='margin:0;'>${s['price']:.2f}</h2>", unsafe_allow_html=True)
+                            st.markdown(f"<b style='color:{'#28a745' if s['change']>=0 else '#dc3545'}; font-size:1.4rem;'>{s['change']:+.2f}%</b>", unsafe_allow_html=True)
+                            st.link_button("📈 K线直达", f"https://www.tradingview.com/chart/?symbol={s['ticker']}")
                         
-                        st.markdown(f"<div style='background:#f1f5f9; padding:10px; border-radius:8px; margin-top:15px; font-size:1rem; border-left:4px solid #3b82f6;'><b>5日累积: {s['t_5d']:+.2f}%</b> | 144日: <b>{s['t_144d']:+.1f}%</b> | 288日战力: <b>{s['t_288d']:+.1f}%</b></div>", unsafe_allow_html=True)
-                        with st.expander("🔍 深度解析"): st.write(st.session_state.my_notes.get(s['ticker'], "等待调研录入..."))
-                    
-                    with c3:
-                        if st.button("🗑️", key=f"del_{s['ticker']}"):
-                            st.session_state.my_sectors[s_name].remove(s['ticker']); save_config(); st.rerun()
+                        with c2:
+                            # 保持原状：五日涨跌幅 UI 方框
+                            h_cols = st.columns(5)
+                            for idx in range(1, 6):
+                                with h_cols[idx-1]:
+                                    cur, pre = to_scalar(s['history']['Close'].iloc[idx]), to_scalar(s['history']['Close'].iloc[idx-1])
+                                    d_chg = ((cur - pre) / pre) * 100
+                                    color = "#28a745" if d_chg >= 0 else "#dc3545"
+                                    st.markdown(f"""
+                                        <div style='text-align:center; border: 1.5px solid #e2e8f0; padding: 10px; border-radius: 10px; background-color: #f8fafc; margin: 2px;'>
+                                            <small style='color:#64748b;'>{s['history'].index[idx].strftime('%m-%d')}</small><br>
+                                            <b style='color:{color}; font-size: 1.4rem;'>{d_chg:+.1f}%</b><br>
+                                            <small style='font-weight:bold; font-size: 1.1rem;'>${cur:.1f}</small>
+                                        </div>
+                                    """, unsafe_allow_html=True)
+                            
+                            st.markdown(f"<div style='background:#f1f5f9; padding:10px; border-radius:8px; margin-top:15px; font-size:1rem; border-left:4px solid #3b82f6;'><b>5日累积: {s['t_5d']:+.2f}%</b> | 144日: <b>{s['t_144d']:+.1f}%</b> | 288日战力: <b>{s['t_288d']:+.1f}%</b></div>", unsafe_allow_html=True)
+                            with st.expander("🔍 深度解析"): st.write(st.session_state.my_notes.get(s['ticker'], "等待调研录入..."))
+                        
+                        with c3:
+                            if st.button("🗑️", key=f"del_{s['ticker']}"):
+                                st.session_state.my_sectors[s_name].remove(s['ticker']); save_config(); st.rerun()
 
-with r_col:
-    st.subheader("🏆 全量战力排行榜")
-    rank_tabs = st.tabs(["日内", "5日", "144d", "288d"])
-    rank_keys = [('change', '今日'), ('t_5d', '5日'), ('t_144d', '144d'), ('t_288d', '288d')]
-    with st.container(height=900): # 100+ 标的全量滚动
-        for i, (key, label) in enumerate(rank_keys):
-            with rank_tabs[i]:
-                sorted_m = sorted(m_res, key=lambda x: x[key], reverse=True)
-                for j, item in enumerate(sorted_m):
-                    # 重点优化：负数显示为红色
-                    val_color = "#dc3545" if item[key] < 0 else "#28a745"
-                    st.markdown(f"""
-                        <div style='display:flex; justify-content:space-between; padding: 5px 0; border-bottom: 1px solid #f1f5f9;'>
-                            <span>{j+1}. <b>{item['ticker']}</b></span>
-                            <span style='color:{val_color}; font-weight:bold; font-family: monospace;'>{item[key]:+.1f}%</span>
-                        </div>
-                    """, unsafe_allow_html=True)
+    with r_col:
+        st.subheader("🏆 全量战力排行榜")
+        rank_tabs = st.tabs(["日内", "5日", "144d", "288d"])
+        rank_keys = [('change', '今日'), ('t_5d', '5日'), ('t_144d', '144d'), ('t_288d', '288d')]
+        with st.container(height=900): # 100+ 标的全量滚动
+            for i, (key, label) in enumerate(rank_keys):
+                with rank_tabs[i]:
+                    sorted_m = sorted(m_res, key=lambda x: x[key], reverse=True)
+                    for j, item in enumerate(sorted_m):
+                        val_color = "#dc3545" if item[key] < 0 else "#28a745"
+                        # 增加：股票代码变为可点击的链接按钮
+                        c_rank, c_val = st.columns([3, 1])
+                        with c_rank:
+                            if st.button(f"{j+1}. {item['ticker']}", key=f"rk_{key}_{item['ticker']}"):
+                                st.session_state.selected_stock = item['ticker']
+                                st.session_state.current_page = "StockPage"
+                                st.rerun()
+                        with c_val:
+                            st.markdown(f"<div style='text-align:right; color:{val_color}; font-weight:bold; font-family: monospace; padding-top:6px;'>{item[key]:+.1f}%</div>", unsafe_allow_html=True)
+                        st.markdown("<hr style='margin:0; border:none; border-bottom:1px solid #f1f5f9;'>", unsafe_allow_html=True)
