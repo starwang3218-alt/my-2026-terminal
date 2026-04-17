@@ -23,7 +23,7 @@ div.stButton button:hover { color: #3b82f6 !important; }
 """, unsafe_allow_html=True)
 
 # --- 1. 配置管理 ---
-CONFIG_FILE = "strategy_terminal_ultra_pro_v20.json"
+CONFIG_FILE = "strategy_terminal_ultra_pro_v21.json"
 
 def load_config():
     if os.path.exists(CONFIG_FILE):
@@ -71,28 +71,47 @@ def to_scalar(val):
     if isinstance(val, (pd.Series, pd.DataFrame)): return float(val.iloc[0]) if not val.empty else 0.0
     return float(val)
 
+def get_return(history_df, days_back):
+    if len(history_df) >= days_back + 1:
+        curr = to_scalar(history_df['Close'].iloc[-1])
+        prev = to_scalar(history_df['Close'].iloc[-(days_back+1)])
+        if prev != 0: return ((curr - prev) / prev) * 100
+    return 0.0
+
 @st.cache_data(ttl=600)
 def fetch_all_data(sectors, benchmarks):
     all_tickers = list(set([t for ts in sectors.values() for t in ts]))
     all_bench = list(set(benchmarks.values()) | {"SOXX", "XAR", "ITA", "URA", "XLI", "QTUM", "SPY"})
     full_data = yf.download(all_tickers + all_bench, period="2y", interval="1d", group_by='ticker', progress=False)
-    results, b_res = [], {}
+    
+    results, b_res, b_history = [], {}, {}
 
+    # 预计算并存储所有基准 ETF 的历史数据，用于跨周期比对
     for b in all_bench:
         try:
             h = full_data[b].dropna()
-            b_res[b] = {"chg": ((to_scalar(h['Close'].iloc[-1]) - to_scalar(h['Close'].iloc[-2])) / to_scalar(h['Close'].iloc[-2])) * 100}
-        except: b_res[b] = {"chg": 0.0}
+            b_history[b] = h
+            b_res[b] = {"chg": get_return(h, 1)}
+        except: pass
 
     for sec_name, tickers in sectors.items():
         b_sym = benchmarks.get(sec_name, "SPY")
-        b_chg = b_res.get(b_sym, {"chg": 0.0})["chg"]
+        b_h = b_history.get(b_sym)
+        b_ret_1 = get_return(b_h, 1) if b_h is not None else 0
+        b_ret_5 = get_return(b_h, 5) if b_h is not None else 0
+        b_ret_30 = get_return(b_h, 30) if b_h is not None else 0
+        b_ret_144 = get_return(b_h, 144) if b_h is not None else 0
+
         for t in tickers:
             try:
                 h = full_data[t].dropna()
-                if len(h) < 30: continue # 确保有足够数据计算均量
-                price, prev = to_scalar(h['Close'].iloc[-1]), to_scalar(h['Close'].iloc[-2])
-                if prev == 0: continue
+                if len(h) < 30: continue 
+                
+                price = to_scalar(h['Close'].iloc[-1])
+                s_ret_1 = get_return(h, 1)
+                s_ret_5 = get_return(h, 5)
+                s_ret_30 = get_return(h, 30)
+                s_ret_144 = get_return(h, 144)
                 
                 h['MA5'] = h['Close'].rolling(window=5).mean()
                 h['MA12'] = h['Close'].rolling(window=12).mean()
@@ -100,7 +119,6 @@ def fetch_all_data(sectors, benchmarks):
                 h['MA144'] = h['Close'].rolling(window=144).mean()
                 h['MA288'] = h['Close'].rolling(window=288).mean()
                 
-                # 成交量萎缩计算 (Vol 5日均量 vs 30日均量)
                 v_ma5 = to_scalar(h['Volume'].rolling(5).mean().iloc[-1])
                 v_ma30 = to_scalar(h['Volume'].rolling(30).mean().iloc[-1])
                 vol_dry_ratio = (v_ma5 / v_ma30) if v_ma30 > 0 else 1.0
@@ -111,31 +129,33 @@ def fetch_all_data(sectors, benchmarks):
                     if all(v > 0 for v in ma_vals):
                         ma_spread = (max(ma_vals) - min(ma_vals)) / min(ma_vals)
 
-                day_chg = ((price - prev) / prev) * 100
-                rs_val = day_chg - b_chg
+                # --- 核心更新：计算多周期相对强度 RS ---
+                rs_1d = s_ret_1 - b_ret_1
+                rs_5d = s_ret_5 - b_ret_5
+                rs_30d = s_ret_30 - b_ret_30
+                rs_144d = s_ret_144 - b_ret_144
                 
-                # --- 吸筹 3 大核心特征提取 ---
-                is_rs_strong = rs_val > 0
+                # 满分 RS 抗跌要求：5日和30日同时跑赢基准
+                is_rs_strong = (rs_5d > 0) and (rs_30d > 0)
                 is_vol_dry = vol_dry_ratio < 0.8
                 is_uptrend = price > to_scalar(h['MA144'].iloc[-1]) if len(h)>=144 else False
 
                 results.append({
-                    "ticker": t, "sector": sec_name, "price": price, "change": day_chg, "rs": rs_val,
-                    "t_5d": ((price - to_scalar(h['Close'].iloc[-6]))/to_scalar(h['Close'].iloc[-6]))*100 if len(h)>=6 else 0,
-                    "t_144d": ((price - to_scalar(h['Close'].iloc[-145]))/to_scalar(h['Close'].iloc[-145]))*100 if len(h)>=145 else 0,
+                    "ticker": t, "sector": sec_name, "price": price, "change": s_ret_1, "rs": rs_1d,
+                    "t_5d": s_ret_5, "t_144d": s_ret_144, 
                     "t_288d": ((price - to_scalar(h['Close'].iloc[-289]))/to_scalar(h['Close'].iloc[-289]))*100 if len(h)>=289 else 0,
                     "history": h.tail(6),
                     "ma5": to_scalar(h['MA5'].iloc[-1]), "ma12": to_scalar(h['MA12'].iloc[-1]),
                     "ma30": to_scalar(h['MA30'].iloc[-1]), "ma144": to_scalar(h['MA144'].iloc[-1]) if len(h)>=144 else 0,
                     "ma288": to_scalar(h['MA288'].iloc[-1]) if len(h)>=288 else 0,
-                    "ma_spread": ma_spread,
+                    "ma_spread": ma_spread, "vol_ratio": vol_dry_ratio,
                     "is_rs_strong": is_rs_strong, "is_vol_dry": is_vol_dry, "is_uptrend": is_uptrend,
-                    "vol_ratio": vol_dry_ratio
+                    "rs_5d": rs_5d, "rs_30d": rs_30d, "rs_144d": rs_144d, "b_sym": b_sym
                 })
             except: pass
     return b_res, results
 
-# --- 新增：带有吸筹诊断的独立研报页 ---
+# --- 新增：带有深度诊断的独立研报页 ---
 def render_stock_page(ticker, m_res):
     st.button("⬅️ 返回战略大盘", on_click=lambda: setattr(st.session_state, 'current_page', 'Dashboard'))
     
@@ -174,41 +194,45 @@ def render_stock_page(ticker, m_res):
             
             st.markdown(f"<div style='background:#f1f5f9; padding:10px; border-radius:8px; margin-top:15px; font-size:1rem; border-left:4px solid #3b82f6;'><b>5日累积: {s['t_5d']:+.2f}%</b> | 144日: <b>{s['t_144d']:+.1f}%</b> | 288日战力: <b>{s['t_288d']:+.1f}%</b></div>", unsafe_allow_html=True)
 
-            # --- 主力吸筹 X光机诊断结果 ---
             ma5, ma12, ma30, ma144, ma288, price = s['ma5'], s['ma12'], s['ma30'], s['ma144'], s['ma288'], s['price']
             
-            # 生成诊断标签
             tags = []
             if s['ma_spread'] < 0.05: tags.append("<span style='background:#fef08a; color:#854d0e; padding:3px 6px; border-radius:4px;'>🎯 均线极度粘合</span>")
-            if s['is_rs_strong']: tags.append("<span style='background:#dcfce7; color:#166534; padding:3px 6px; border-radius:4px;'>🛡️ RS抗跌托底</span>")
+            if s['is_rs_strong']: tags.append("<span style='background:#dcfce7; color:#166534; padding:3px 6px; border-radius:4px;'>🛡️ 30日RS硬核托底</span>")
             if s['is_vol_dry']: tags.append("<span style='background:#e0e7ff; color:#3730a3; padding:3px 6px; border-radius:4px;'>🤫 成交量极度萎缩</span>")
             if s['is_uptrend']: tags.append("<span style='background:#dbeafe; color:#1e40af; padding:3px 6px; border-radius:4px;'>⛰️ 处于长线之上</span>")
             
             tags_html = " ".join(tags) if tags else "<span style='color:#64748b;'>未检测到明显吸筹特征</span>"
-
             dev_288 = ((price - ma288) / ma288 * 100) if ma288 > 0 else 0
-            dev_color = "#dc3545" if dev_288 < 0 else "#28a745"
+
+            # 渲染全新的多周期 RS 面板
+            c_rs5 = "#dc3545" if s['rs_5d'] < 0 else "#28a745"
+            c_rs30 = "#dc3545" if s['rs_30d'] < 0 else "#28a745"
+            c_rs144 = "#dc3545" if s['rs_144d'] < 0 else "#28a745"
 
             st.markdown(f"""
             <div style='background:#ffffff; border:1.5px solid #e2e8f0; padding:12px; border-radius:8px; margin-top:10px;'>
-                <div style='margin-bottom:10px; font-size:0.95rem;'><b>主力行为特征：</b> {tags_html}</div>
-                <div style='margin-bottom:10px; font-size:0.95rem; color:#475569;'>当前偏离 288日均线: <b style='color:{dev_color}; font-size:1.1rem;'>{dev_288:+.2f}%</b> (量能收缩比: {s['vol_ratio']:.2f})</div>
-                <div style='display:flex; justify-content:space-between; font-size:0.9rem; color:#475569; font-family:monospace; background:#f8fafc; padding:8px; border-radius:4px;'>
-                    <span>MA5: <b>${ma5:.2f}</b></span> |
-                    <span>MA12: <b>${ma12:.2f}</b></span> |
-                    <span>MA30: <b>${ma30:.2f}</b></span> |
-                    <span>MA144: <b>${ma144:.2f}</b></span> |
-                    <span>MA288: <b>${ma288:.2f}</b></span>
+                <div style='margin-bottom:8px; font-size:0.95rem;'><b>主力行为：</b> {tags_html}</div>
+                <div style='margin-bottom:8px; font-size:0.9rem; color:#475569;'>偏离 288日均线: <b style='color:{"#dc3545" if dev_288 < 0 else "#28a745"};'>{dev_288:+.2f}%</b> (量缩比: {s['vol_ratio']:.2f})</div>
+                
+                <div style='display:flex; justify-content:space-between; align-items:center; background:#f8fafc; padding:8px; border-radius:6px; margin-bottom:8px;'>
+                    <span style='font-size:0.85rem; color:#64748b; font-weight:bold;'>对比基准: {s['b_sym']}</span>
+                    <span style='font-size:0.9rem;'>RS 5日: <b style='color:{c_rs5};'>{s['rs_5d']:+.1f}%</b></span>
+                    <span style='font-size:0.9rem;'>RS 30日: <b style='color:{c_rs30};'>{s['rs_30d']:+.1f}%</b></span>
+                    <span style='font-size:0.9rem;'>RS 144日: <b style='color:{c_rs144};'>{s['rs_144d']:+.1f}%</b></span>
+                </div>
+
+                <div style='display:flex; justify-content:space-between; font-size:0.9rem; color:#475569; font-family:monospace;'>
+                    <span>MA5: <b>${ma5:.2f}</b></span> | <span>MA12: <b>${ma12:.2f}</b></span> | <span>MA30: <b>${ma30:.2f}</b></span> | <span>MA144: <b>${ma144:.2f}</b></span> | <span>MA288: <b>${ma288:.2f}</b></span>
                 </div>
             </div>
             """, unsafe_allow_html=True)
 
     st.divider()
-    
     current_note = st.session_state.my_notes.get(ticker, "")
     col_edit, col_preview = st.columns([1, 1])
     with col_edit:
-        new_note = st.text_area(f"撰写 {ticker} 的博弈逻辑 (支持 Markdown)：", value=current_note, height=500)
+        new_note = st.text_area(f"撰写 {ticker} 的博弈逻辑：", value=current_note, height=500)
         if st.button("💾 保存解析内容", type="primary", use_container_width=True):
             st.session_state.my_notes[ticker] = new_note
             save_config()
@@ -248,13 +272,12 @@ b_res, m_res = fetch_all_data(st.session_state.my_sectors, st.session_state.my_b
 if st.session_state.current_page == "StockPage":
     render_stock_page(st.session_state.selected_stock, m_res)
 else:
-    st.title("🏛️ 2026 战略资产终端 (主力雷达版)")
+    st.title("🏛️ 2026 战略资产终端 (多周期引擎)")
     r_cols = st.columns(len(b_res))
     for i, (sym, val) in enumerate(b_res.items()):
         with r_cols[i]: st.metric(sym, f"{val['chg']:+.2f}%")
 
     st.divider()
-
     l_col, r_col = st.columns([3.5, 1.5])
 
     with l_col:
@@ -297,7 +320,6 @@ else:
 
     with r_col:
         st.subheader("🏆 战力排行榜")
-        # --- 核心：潜伏雷达 进阶逻辑 ---
         rank_tabs = st.tabs(["日内", "5日", "144d", "288d", "🎯 潜伏"])
         rank_keys = [('change', '今日'), ('t_5d', '5日'), ('t_144d', '144d'), ('t_288d', '288d')]
         
@@ -317,26 +339,22 @@ else:
                             st.markdown(f"<div style='text-align:right; color:{val_color}; font-weight:bold; font-family: monospace; padding-top:6px;'>{item[key]:+.1f}%</div>", unsafe_allow_html=True)
                         st.markdown("<hr style='margin:0; border:none; border-bottom:1px solid #f1f5f9;'>", unsafe_allow_html=True)
             
-            # --- 渲染最高阶潜伏雷达面板 ---
             with rank_tabs[4]:
-                st.markdown("<small style='color:#64748b;'>* 强制过滤僵尸股，仅显示同时满足【粘合+拒跌+缩量+高位】的高分标的</small>", unsafe_allow_html=True)
+                st.markdown("<small style='color:#64748b;'>* 扫描多均线粘合，且 5日/30日 必须双重跑赢大盘的硬核标的</small>", unsafe_allow_html=True)
                 
-                # 过滤出真正符合“吸筹特征”的标的
                 sniper_list = []
                 for x in m_res:
-                    if x['ma_spread'] < 0.05: # 第一关：必须均线粘合
+                    if x['ma_spread'] < 0.05: 
                         score = 0
                         if x['is_rs_strong']: score += 1
                         if x['is_vol_dry']: score += 1
                         if x['is_uptrend']: score += 1
                         
-                        # 只有至少满足2个附加条件才进入狙击名单
                         if score >= 2:
                             x['sniper_score'] = score
                             sniper_list.append(x)
                 
-                # 按得分和 RS 相对强度排序
-                sniper_list = sorted(sniper_list, key=lambda x: (x['sniper_score'], x['rs']), reverse=True)
+                sniper_list = sorted(sniper_list, key=lambda x: (x['sniper_score'], x['rs_30d']), reverse=True)
                 
                 if not sniper_list:
                     st.info("目前没有满足严苛吸筹条件的标的。保持耐心。")
