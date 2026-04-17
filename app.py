@@ -23,7 +23,7 @@ div.stButton button:hover { color: #3b82f6 !important; }
 """, unsafe_allow_html=True)
 
 # --- 1. 配置管理 ---
-CONFIG_FILE = "strategy_terminal_ultra_pro_v22.json"
+CONFIG_FILE = "strategy_terminal_ultra_pro_v23.json"
 
 def load_config():
     if os.path.exists(CONFIG_FILE):
@@ -79,14 +79,16 @@ def get_return(history_df, days_back):
         if prev != 0: return ((curr - prev) / prev) * 100
     return 0.0
 
+# 核心优化1：将“数据下载”彻底独立并缓存，避免拖动滑块时重复请求API
 @st.cache_data(ttl=600)
-def fetch_all_data(sectors, benchmarks):
-    all_tickers = list(set([t for ts in sectors.values() for t in ts]))
-    all_bench = list(set(benchmarks.values()) | {"SOXX", "XAR", "ITA", "URA", "XLI", "QTUM", "SPY"})
-    full_data = yf.download(all_tickers + all_bench, period="2y", interval="1d", group_by='ticker', progress=False)
-    
+def fetch_raw_data(all_tickers):
+    return yf.download(all_tickers, period="2y", interval="1d", group_by='ticker', progress=False)
+
+# 核心优化2：将“数据计算”剥离，利用内存秒级重算
+def compute_all_metrics(sectors, benchmarks, full_data, def_win):
     results, b_res, b_history = [], {}, {}
 
+    all_bench = list(set(benchmarks.values()) | {"SOXX", "XAR", "ITA", "URA", "XLI", "QTUM", "SPY"})
     for b in all_bench:
         try:
             h = full_data[b].dropna()
@@ -138,11 +140,11 @@ def fetch_all_data(sectors, benchmarks):
                 is_vol_dry = vol_dry_ratio < 0.8
                 is_uptrend = price > to_scalar(h['MA144'].iloc[-1]) if len(h)>=144 else False
 
-                # --- 核心更新：护城河雷达 (逆风局护盘率) ---
+                # 动态计算逆风护盘率（基于滑块传入的 def_win 天数）
                 defense_rate = 0.0
-                if b_h is not None and len(h) >= 30 and len(b_h) >= 30:
-                    s_daily_returns = h['Close'].tail(31).pct_change().dropna()
-                    b_daily_returns = b_h['Close'].pct_change().dropna()
+                if b_h is not None and len(h) >= def_win and len(b_h) >= def_win:
+                    s_daily_returns = h['Close'].tail(def_win + 1).pct_change().dropna()
+                    b_daily_returns = b_h['Close'].tail(def_win + 1).pct_change().dropna()
                     common_idx = s_daily_returns.index.intersection(b_daily_returns.index)
                     s_aligned = s_daily_returns.loc[common_idx]
                     b_aligned = b_daily_returns.loc[common_idx]
@@ -170,7 +172,7 @@ def fetch_all_data(sectors, benchmarks):
     return b_res, results
 
 # --- 带有深度诊断的独立研报页 ---
-def render_stock_page(ticker, m_res):
+def render_stock_page(ticker, m_res, def_win):
     st.button("⬅️ 返回战略大盘", on_click=lambda: setattr(st.session_state, 'current_page', 'Dashboard'))
     
     s = next((x for x in m_res if x['ticker'] == ticker), None)
@@ -223,7 +225,6 @@ def render_stock_page(ticker, m_res):
             c_rs30 = "#dc3545" if s['rs_30d'] < 0 else "#28a745"
             c_rs144 = "#dc3545" if s['rs_144d'] < 0 else "#28a745"
             
-            # 护城河颜色判定
             c_def = "#28a745" if s['defense_rate'] >= 60 else ("#854d0e" if s['defense_rate'] >= 40 else "#dc3545")
 
             html_content = f"""
@@ -232,7 +233,7 @@ def render_stock_page(ticker, m_res):
 <div style='margin-bottom:8px; font-size:0.9rem; color:#475569;'>偏离 288日均线: <b style='color:{"#dc3545" if dev_288 < 0 else "#28a745"};'>{dev_288:+.2f}%</b> (量缩比: {s['vol_ratio']:.2f})</div>
 <div style='display:flex; justify-content:space-between; align-items:center; background:#f8fafc; padding:8px; border-radius:6px; margin-bottom:8px;'>
 <span style='font-size:0.85rem; color:#64748b; font-weight:bold;'>基准: {s['b_sym']}</span>
-<span style='font-size:0.9rem;'>逆风护盘率: <b style='color:{c_def}; background:#f1f5f9; padding:2px 4px; border-radius:4px;'>{s['defense_rate']:.0f}%</b></span>
+<span style='font-size:0.9rem;'>逆风护盘率 ({def_win}日): <b style='color:{c_def}; background:#f1f5f9; padding:2px 4px; border-radius:4px;'>{s['defense_rate']:.0f}%</b></span>
 <span style='font-size:0.9rem;'>RS 5日: <b style='color:{c_rs5};'>{s['rs_5d']:+.1f}%</b></span>
 <span style='font-size:0.9rem;'>RS 30日: <b style='color:{c_rs30};'>{s['rs_30d']:+.1f}%</b></span>
 <span style='font-size:0.9rem;'>RS 144日: <b style='color:{c_rs144};'>{s['rs_144d']:+.1f}%</b></span>
@@ -262,8 +263,13 @@ def render_stock_page(ticker, m_res):
 # --- 3. 界面布局 ---
 with st.sidebar:
     st.header("⚙️ 终端管理")
-    if st.button("🚀 刷新全量数据", type="primary", use_container_width=True): st.cache_data.clear(); st.rerun()
+    if st.button("🚀 刷新全量网络数据", type="primary", use_container_width=True): st.cache_data.clear(); st.rerun()
     
+    st.divider()
+    st.subheader("🛡️ 雷达参数设定")
+    def_win = st.slider("逆风护盘统计周期 (天)", min_value=10, max_value=60, value=30, step=5)
+    st.markdown("<small style='color:#64748b;'>* 滑动调整测算周期，排行榜将瞬间重算。</small>", unsafe_allow_html=True)
+
     with st.expander("📁 板块编辑"):
         target_s = st.selectbox("当前板块", list(st.session_state.my_sectors.keys()))
         nt = st.text_input("添加代码")
@@ -283,12 +289,16 @@ with st.sidebar:
     st.session_state.my_notes[edit_t] = st.text_area("简易记录", value=st.session_state.my_notes.get(edit_t, ""), height=150)
     if st.button("💾 保存侧栏笔记", use_container_width=True): save_config()
 
-b_res, m_res = fetch_all_data(st.session_state.my_sectors, st.session_state.my_benchmarks)
+# ---- 分离式数据流：先下载原始数据，再带入内存极速计算 ----
+all_tickers_flat = list(set([t for ts in st.session_state.my_sectors.values() for t in ts]))
+all_bench_flat = list(set(st.session_state.my_benchmarks.values()) | {"SOXX", "XAR", "ITA", "URA", "XLI", "QTUM", "SPY"})
+full_raw_data = fetch_raw_data(list(set(all_tickers_flat + all_bench_flat)))
+b_res, m_res = compute_all_metrics(st.session_state.my_sectors, st.session_state.my_benchmarks, full_raw_data, def_win)
 
 if st.session_state.current_page == "StockPage":
-    render_stock_page(st.session_state.selected_stock, m_res)
+    render_stock_page(st.session_state.selected_stock, m_res, def_win)
 else:
-    st.title("🏛️ 2026 战略资产终端 (V22 护城河雷达)")
+    st.title("🏛️ 2026 战略资产终端 (全景护城河版)")
     r_cols = st.columns(len(b_res))
     for i, (sym, val) in enumerate(b_res.items()):
         with r_cols[i]: st.metric(sym, f"{val['chg']:+.2f}%")
@@ -336,7 +346,8 @@ else:
 
     with r_col:
         st.subheader("🏆 战力排行榜")
-        rank_tabs = st.tabs(["日内", "5日", "144d", "288d", "🎯 潜伏"])
+        # 核心更新：新增了 🛡️护盘 排行榜
+        rank_tabs = st.tabs(["日内", "5日", "144d", "288d", "🛡️ 护盘", "🎯 潜伏"])
         rank_keys = [('change', '今日'), ('t_5d', '5日'), ('t_144d', '144d'), ('t_288d', '288d')]
         
         with st.container(height=900): 
@@ -355,7 +366,23 @@ else:
                             st.markdown(f"<div style='text-align:right; color:{val_color}; font-weight:bold; font-family: monospace; padding-top:6px;'>{item[key]:+.1f}%</div>", unsafe_allow_html=True)
                         st.markdown("<hr style='margin:0; border:none; border-bottom:1px solid #f1f5f9;'>", unsafe_allow_html=True)
             
+            # --- 全新独立榜单：全市场逆风护盘胜率排行榜 ---
             with rank_tabs[4]:
+                st.markdown(f"<small style='color:#64748b;'>* 过去 {def_win} 个交易日，大盘下跌时的跑赢胜率</small>", unsafe_allow_html=True)
+                sorted_def = sorted(m_res, key=lambda x: x['defense_rate'], reverse=True)
+                for j, item in enumerate(sorted_def):
+                    c_def = "#28a745" if item['defense_rate'] >= 60 else ("#854d0e" if item['defense_rate'] >= 40 else "#dc3545")
+                    c_rank, c_val = st.columns([3, 1])
+                    with c_rank:
+                        if st.button(f"{j+1}. {item['ticker']}", key=f"rk_def_{item['ticker']}"):
+                            st.session_state.selected_stock = item['ticker']
+                            st.session_state.current_page = "StockPage"
+                            st.rerun()
+                    with c_val:
+                        st.markdown(f"<div style='text-align:right; color:{c_def}; font-weight:bold; font-family: monospace; padding-top:6px;'>{item['defense_rate']:.0f}%</div>", unsafe_allow_html=True)
+                    st.markdown("<hr style='margin:0; border:none; border-bottom:1px solid #f1f5f9;'>", unsafe_allow_html=True)
+
+            with rank_tabs[5]:
                 st.markdown("<small style='color:#64748b;'>* 扫描多均线粘合标的，评级包含【逆风护盘率】</small>", unsafe_allow_html=True)
                 
                 sniper_list = []
@@ -365,7 +392,7 @@ else:
                         if x['is_rs_strong']: score += 1
                         if x['is_vol_dry']: score += 1
                         if x['is_uptrend']: score += 1
-                        if x['defense_rate'] >= 60: score += 1 # 新增第四颗星的门槛：逆风护盘率 >= 60%
+                        if x['defense_rate'] >= 60: score += 1
                         
                         if score >= 2:
                             x['sniper_score'] = score
