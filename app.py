@@ -44,11 +44,12 @@ def load_config():
             "电池/新能": ["EOSE", "ENVX", "QS", "KULR", "SLDP"],
             "通信/自动驾驶": ["VEON", "DY", "INDI", "ARBE", "PDYN"],
             "金融/支付": ["SEZL", "INTU"],
+            "全球供应链": ["RBNE"], 
             "沙盘推演": ["ELPW"] 
         },
         "benchmarks": {
             "量子": "QTUM", "能源稀土": "URA", "军工国防": "ITA", "半导体": "SOXX", 
-            "数字媒体": "XLC", "AI算力/应用": "IGV", "电力基建": "XLI", "航空精工/维修": "XAR", "沙盘推演": "SPY"
+            "数字媒体": "XLC", "AI算力/应用": "IGV", "电力基建": "XLI", "航空精工/维修": "XAR", "全球供应链": "SPY", "沙盘推演": "SPY"
         },
         "notes": {}
     }
@@ -86,7 +87,6 @@ def fetch_all_data(sectors, benchmarks):
     
     results, b_res, b_history = [], {}, {}
 
-    # 预计算并存储所有基准 ETF 的历史数据，用于跨周期比对
     for b in all_bench:
         try:
             h = full_data[b].dropna()
@@ -129,13 +129,11 @@ def fetch_all_data(sectors, benchmarks):
                     if all(v > 0 for v in ma_vals):
                         ma_spread = (max(ma_vals) - min(ma_vals)) / min(ma_vals)
 
-                # --- 核心更新：计算多周期相对强度 RS ---
                 rs_1d = s_ret_1 - b_ret_1
                 rs_5d = s_ret_5 - b_ret_5
                 rs_30d = s_ret_30 - b_ret_30
                 rs_144d = s_ret_144 - b_ret_144
                 
-                # 满分 RS 抗跌要求：5日和30日同时跑赢基准
                 is_rs_strong = (rs_5d > 0) and (rs_30d > 0)
                 is_vol_dry = vol_dry_ratio < 0.8
                 is_uptrend = price > to_scalar(h['MA144'].iloc[-1]) if len(h)>=144 else False
@@ -205,28 +203,27 @@ def render_stock_page(ticker, m_res):
             tags_html = " ".join(tags) if tags else "<span style='color:#64748b;'>未检测到明显吸筹特征</span>"
             dev_288 = ((price - ma288) / ma288 * 100) if ma288 > 0 else 0
 
-            # 渲染全新的多周期 RS 面板
             c_rs5 = "#dc3545" if s['rs_5d'] < 0 else "#28a745"
             c_rs30 = "#dc3545" if s['rs_30d'] < 0 else "#28a745"
             c_rs144 = "#dc3545" if s['rs_144d'] < 0 else "#28a745"
 
-            st.markdown(f"""
-            <div style='background:#ffffff; border:1.5px solid #e2e8f0; padding:12px; border-radius:8px; margin-top:10px;'>
-                <div style='margin-bottom:8px; font-size:0.95rem;'><b>主力行为：</b> {tags_html}</div>
-                <div style='margin-bottom:8px; font-size:0.9rem; color:#475569;'>偏离 288日均线: <b style='color:{"#dc3545" if dev_288 < 0 else "#28a745"};'>{dev_288:+.2f}%</b> (量缩比: {s['vol_ratio']:.2f})</div>
-                
-                <div style='display:flex; justify-content:space-between; align-items:center; background:#f8fafc; padding:8px; border-radius:6px; margin-bottom:8px;'>
-                    <span style='font-size:0.85rem; color:#64748b; font-weight:bold;'>对比基准: {s['b_sym']}</span>
-                    <span style='font-size:0.9rem;'>RS 5日: <b style='color:{c_rs5};'>{s['rs_5d']:+.1f}%</b></span>
-                    <span style='font-size:0.9rem;'>RS 30日: <b style='color:{c_rs30};'>{s['rs_30d']:+.1f}%</b></span>
-                    <span style='font-size:0.9rem;'>RS 144日: <b style='color:{c_rs144};'>{s['rs_144d']:+.1f}%</b></span>
-                </div>
-
-                <div style='display:flex; justify-content:space-between; font-size:0.9rem; color:#475569; font-family:monospace;'>
-                    <span>MA5: <b>${ma5:.2f}</b></span> | <span>MA12: <b>${ma12:.2f}</b></span> | <span>MA30: <b>${ma30:.2f}</b></span> | <span>MA144: <b>${ma144:.2f}</b></span> | <span>MA288: <b>${ma288:.2f}</b></span>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
+            # ---- 核心修复点：强制消除前置空格，完美渲染 HTML 面板 ----
+            html_content = f"""
+<div style='background:#ffffff; border:1.5px solid #e2e8f0; padding:12px; border-radius:8px; margin-top:10px;'>
+<div style='margin-bottom:8px; font-size:0.95rem;'><b>主力行为：</b> {tags_html}</div>
+<div style='margin-bottom:8px; font-size:0.9rem; color:#475569;'>偏离 288日均线: <b style='color:{"#dc3545" if dev_288 < 0 else "#28a745"};'>{dev_288:+.2f}%</b> (量缩比: {s['vol_ratio']:.2f})</div>
+<div style='display:flex; justify-content:space-between; align-items:center; background:#f8fafc; padding:8px; border-radius:6px; margin-bottom:8px;'>
+<span style='font-size:0.85rem; color:#64748b; font-weight:bold;'>对比基准: {s['b_sym']}</span>
+<span style='font-size:0.9rem;'>RS 5日: <b style='color:{c_rs5};'>{s['rs_5d']:+.1f}%</b></span>
+<span style='font-size:0.9rem;'>RS 30日: <b style='color:{c_rs30};'>{s['rs_30d']:+.1f}%</b></span>
+<span style='font-size:0.9rem;'>RS 144日: <b style='color:{c_rs144};'>{s['rs_144d']:+.1f}%</b></span>
+</div>
+<div style='display:flex; justify-content:space-between; font-size:0.9rem; color:#475569; font-family:monospace;'>
+<span>MA5: <b>${ma5:.2f}</b></span> | <span>MA12: <b>${ma12:.2f}</b></span> | <span>MA30: <b>${ma30:.2f}</b></span> | <span>MA144: <b>${ma144:.2f}</b></span> | <span>MA288: <b>${ma288:.2f}</b></span>
+</div>
+</div>
+"""
+            st.markdown(html_content, unsafe_allow_html=True)
 
     st.divider()
     current_note = st.session_state.my_notes.get(ticker, "")
@@ -272,7 +269,7 @@ b_res, m_res = fetch_all_data(st.session_state.my_sectors, st.session_state.my_b
 if st.session_state.current_page == "StockPage":
     render_stock_page(st.session_state.selected_stock, m_res)
 else:
-    st.title("🏛️ 2026 战略资产终端 (多周期引擎)")
+    st.title("🏛️ 2026 战略资产终端 (终极 RS 修复版)")
     r_cols = st.columns(len(b_res))
     for i, (sym, val) in enumerate(b_res.items()):
         with r_cols[i]: st.metric(sym, f"{val['chg']:+.2f}%")
