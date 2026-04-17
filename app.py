@@ -23,7 +23,7 @@ div.stButton button:hover { color: #3b82f6 !important; }
 """, unsafe_allow_html=True)
 
 # --- 1. 配置管理 ---
-CONFIG_FILE = "strategy_terminal_ultra_pro_v19.json"
+CONFIG_FILE = "strategy_terminal_ultra_pro_v20.json"
 
 def load_config():
     if os.path.exists(CONFIG_FILE):
@@ -44,7 +44,7 @@ def load_config():
             "电池/新能": ["EOSE", "ENVX", "QS", "KULR", "SLDP"],
             "通信/自动驾驶": ["VEON", "DY", "INDI", "ARBE", "PDYN"],
             "金融/支付": ["SEZL", "INTU"],
-            "沙盘推演": ["ELPW"] # 专门用于技术异动教学和推演
+            "沙盘推演": ["ELPW"] 
         },
         "benchmarks": {
             "量子": "QTUM", "能源稀土": "URA", "军工国防": "ITA", "半导体": "SOXX", 
@@ -90,7 +90,7 @@ def fetch_all_data(sectors, benchmarks):
         for t in tickers:
             try:
                 h = full_data[t].dropna()
-                if len(h) < 2: continue
+                if len(h) < 30: continue # 确保有足够数据计算均量
                 price, prev = to_scalar(h['Close'].iloc[-1]), to_scalar(h['Close'].iloc[-2])
                 if prev == 0: continue
                 
@@ -99,33 +99,43 @@ def fetch_all_data(sectors, benchmarks):
                 h['MA30'] = h['Close'].rolling(window=30).mean()
                 h['MA144'] = h['Close'].rolling(window=144).mean()
                 h['MA288'] = h['Close'].rolling(window=288).mean()
+                
+                # 成交量萎缩计算 (Vol 5日均量 vs 30日均量)
+                v_ma5 = to_scalar(h['Volume'].rolling(5).mean().iloc[-1])
+                v_ma30 = to_scalar(h['Volume'].rolling(30).mean().iloc[-1])
+                vol_dry_ratio = (v_ma5 / v_ma30) if v_ma30 > 0 else 1.0
 
-                # --- 核心：计算均线粘合度 (MA Spread) ---
                 ma_spread = 999
                 if len(h) >= 144:
                     ma_vals = [to_scalar(h['MA5'].iloc[-1]), to_scalar(h['MA12'].iloc[-1]), to_scalar(h['MA30'].iloc[-1]), to_scalar(h['MA144'].iloc[-1])]
                     if all(v > 0 for v in ma_vals):
-                        # 计算 5, 12, 30, 144 四根均线之间的最大离散度
                         ma_spread = (max(ma_vals) - min(ma_vals)) / min(ma_vals)
 
                 day_chg = ((price - prev) / prev) * 100
+                rs_val = day_chg - b_chg
+                
+                # --- 吸筹 3 大核心特征提取 ---
+                is_rs_strong = rs_val > 0
+                is_vol_dry = vol_dry_ratio < 0.8
+                is_uptrend = price > to_scalar(h['MA144'].iloc[-1]) if len(h)>=144 else False
+
                 results.append({
-                    "ticker": t, "sector": sec_name, "price": price, "change": day_chg, "rs": day_chg - b_chg,
-                    "t_5d": ((price - to_scalar(h['Close'].iloc[-6]))/to_scalar(h['Close'].iloc[-6]))*100 if len(h)>=6 and to_scalar(h['Close'].iloc[-6])!=0 else 0,
-                    "t_144d": ((price - to_scalar(h['Close'].iloc[-145]))/to_scalar(h['Close'].iloc[-145]))*100 if len(h)>=145 and to_scalar(h['Close'].iloc[-145])!=0 else 0,
-                    "t_288d": ((price - to_scalar(h['Close'].iloc[-289]))/to_scalar(h['Close'].iloc[-289]))*100 if len(h)>=289 and to_scalar(h['Close'].iloc[-289])!=0 else 0,
+                    "ticker": t, "sector": sec_name, "price": price, "change": day_chg, "rs": rs_val,
+                    "t_5d": ((price - to_scalar(h['Close'].iloc[-6]))/to_scalar(h['Close'].iloc[-6]))*100 if len(h)>=6 else 0,
+                    "t_144d": ((price - to_scalar(h['Close'].iloc[-145]))/to_scalar(h['Close'].iloc[-145]))*100 if len(h)>=145 else 0,
+                    "t_288d": ((price - to_scalar(h['Close'].iloc[-289]))/to_scalar(h['Close'].iloc[-289]))*100 if len(h)>=289 else 0,
                     "history": h.tail(6),
-                    "ma5": to_scalar(h['MA5'].iloc[-1]) if len(h)>=5 else 0,
-                    "ma12": to_scalar(h['MA12'].iloc[-1]) if len(h)>=12 else 0,
-                    "ma30": to_scalar(h['MA30'].iloc[-1]) if len(h)>=30 else 0,
-                    "ma144": to_scalar(h['MA144'].iloc[-1]) if len(h)>=144 else 0,
+                    "ma5": to_scalar(h['MA5'].iloc[-1]), "ma12": to_scalar(h['MA12'].iloc[-1]),
+                    "ma30": to_scalar(h['MA30'].iloc[-1]), "ma144": to_scalar(h['MA144'].iloc[-1]) if len(h)>=144 else 0,
                     "ma288": to_scalar(h['MA288'].iloc[-1]) if len(h)>=288 else 0,
-                    "ma_spread": ma_spread # 注入粘合度基因
+                    "ma_spread": ma_spread,
+                    "is_rs_strong": is_rs_strong, "is_vol_dry": is_vol_dry, "is_uptrend": is_uptrend,
+                    "vol_ratio": vol_dry_ratio
                 })
             except: pass
     return b_res, results
 
-# --- 新增：带有均线雷达的独立研报页 ---
+# --- 新增：带有吸筹诊断的独立研报页 ---
 def render_stock_page(ticker, m_res):
     st.button("⬅️ 返回战略大盘", on_click=lambda: setattr(st.session_state, 'current_page', 'Dashboard'))
     
@@ -164,25 +174,25 @@ def render_stock_page(ticker, m_res):
             
             st.markdown(f"<div style='background:#f1f5f9; padding:10px; border-radius:8px; margin-top:15px; font-size:1rem; border-left:4px solid #3b82f6;'><b>5日累积: {s['t_5d']:+.2f}%</b> | 144日: <b>{s['t_144d']:+.1f}%</b> | 288日战力: <b>{s['t_288d']:+.1f}%</b></div>", unsafe_allow_html=True)
 
+            # --- 主力吸筹 X光机诊断结果 ---
             ma5, ma12, ma30, ma144, ma288, price = s['ma5'], s['ma12'], s['ma30'], s['ma144'], s['ma288'], s['price']
-            trend_html = ""
             
-            # 判断逻辑更新：加入了极度粘合的判定
-            if s['ma_spread'] < 0.04:
-                trend_html = "<span style='background-color:#fef08a; color:#854d0e; padding:4px 8px; border-radius:4px; font-weight:bold;'>🎯 极度粘合 (爆发前夜)</span>"
-            elif ma288 > 0 and (price > ma5 > ma12 > ma30 > ma144 > ma288):
-                trend_html = "<span style='background-color:#dcfce7; color:#166534; padding:4px 8px; border-radius:4px; font-weight:bold;'>🔥 战力全开 (绝对多头)</span>"
-            elif ma288 > 0 and price < ma288:
-                trend_html = "<span style='background-color:#fee2e2; color:#991b1b; padding:4px 8px; border-radius:4px; font-weight:bold;'>🧊 战略深水区</span>"
-            else:
-                trend_html = "<span style='background-color:#f1f5f9; color:#475569; padding:4px 8px; border-radius:4px; font-weight:bold;'>⚖️ 震荡整理区</span>"
+            # 生成诊断标签
+            tags = []
+            if s['ma_spread'] < 0.05: tags.append("<span style='background:#fef08a; color:#854d0e; padding:3px 6px; border-radius:4px;'>🎯 均线极度粘合</span>")
+            if s['is_rs_strong']: tags.append("<span style='background:#dcfce7; color:#166534; padding:3px 6px; border-radius:4px;'>🛡️ RS抗跌托底</span>")
+            if s['is_vol_dry']: tags.append("<span style='background:#e0e7ff; color:#3730a3; padding:3px 6px; border-radius:4px;'>🤫 成交量极度萎缩</span>")
+            if s['is_uptrend']: tags.append("<span style='background:#dbeafe; color:#1e40af; padding:3px 6px; border-radius:4px;'>⛰️ 处于长线之上</span>")
             
+            tags_html = " ".join(tags) if tags else "<span style='color:#64748b;'>未检测到明显吸筹特征</span>"
+
             dev_288 = ((price - ma288) / ma288 * 100) if ma288 > 0 else 0
             dev_color = "#dc3545" if dev_288 < 0 else "#28a745"
 
             st.markdown(f"""
             <div style='background:#ffffff; border:1.5px solid #e2e8f0; padding:12px; border-radius:8px; margin-top:10px;'>
-                <div style='margin-bottom:10px;'>{trend_html} <span style='margin-left:15px; font-size:0.95rem; color:#475569;'>当前偏离 288日均线: <b style='color:{dev_color}; font-size:1.1rem;'>{dev_288:+.2f}%</b></span></div>
+                <div style='margin-bottom:10px; font-size:0.95rem;'><b>主力行为特征：</b> {tags_html}</div>
+                <div style='margin-bottom:10px; font-size:0.95rem; color:#475569;'>当前偏离 288日均线: <b style='color:{dev_color}; font-size:1.1rem;'>{dev_288:+.2f}%</b> (量能收缩比: {s['vol_ratio']:.2f})</div>
                 <div style='display:flex; justify-content:space-between; font-size:0.9rem; color:#475569; font-family:monospace; background:#f8fafc; padding:8px; border-radius:4px;'>
                     <span>MA5: <b>${ma5:.2f}</b></span> |
                     <span>MA12: <b>${ma12:.2f}</b></span> |
@@ -238,7 +248,7 @@ b_res, m_res = fetch_all_data(st.session_state.my_sectors, st.session_state.my_b
 if st.session_state.current_page == "StockPage":
     render_stock_page(st.session_state.selected_stock, m_res)
 else:
-    st.title("🏛️ 2026 战略资产终端 (终极排版)")
+    st.title("🏛️ 2026 战略资产终端 (主力雷达版)")
     r_cols = st.columns(len(b_res))
     for i, (sym, val) in enumerate(b_res.items()):
         with r_cols[i]: st.metric(sym, f"{val['chg']:+.2f}%")
@@ -286,13 +296,12 @@ else:
                                 st.session_state.my_sectors[s_name].remove(s['ticker']); save_config(); st.rerun()
 
     with r_col:
-        st.subheader("🏆 全量战力排行榜")
-        # --- 核心：新增潜伏雷达独立 Tab ---
+        st.subheader("🏆 战力排行榜")
+        # --- 核心：潜伏雷达 进阶逻辑 ---
         rank_tabs = st.tabs(["日内", "5日", "144d", "288d", "🎯 潜伏"])
         rank_keys = [('change', '今日'), ('t_5d', '5日'), ('t_144d', '144d'), ('t_288d', '288d')]
         
         with st.container(height=900): 
-            # 渲染前四个常规排行榜
             for i, (key, label) in enumerate(rank_keys):
                 with rank_tabs[i]:
                     sorted_m = sorted(m_res, key=lambda x: x[key], reverse=True)
@@ -308,23 +317,38 @@ else:
                             st.markdown(f"<div style='text-align:right; color:{val_color}; font-weight:bold; font-family: monospace; padding-top:6px;'>{item[key]:+.1f}%</div>", unsafe_allow_html=True)
                         st.markdown("<hr style='margin:0; border:none; border-bottom:1px solid #f1f5f9;'>", unsafe_allow_html=True)
             
-            # --- 渲染潜伏雷达专属面板 ---
+            # --- 渲染最高阶潜伏雷达面板 ---
             with rank_tabs[4]:
-                st.markdown("<small style='color:#64748b;'>* 扫描 MA5/12/30/144 极度粘合的标的，按RS排序</small>", unsafe_allow_html=True)
-                # 筛选出均线振幅小于 4% (0.04) 的高度收敛标的
-                coiled_stocks = [x for x in m_res if x['ma_spread'] < 0.04 and x['ma144'] > 0]
-                coiled_stocks = sorted(coiled_stocks, key=lambda x: x['rs'], reverse=True)
+                st.markdown("<small style='color:#64748b;'>* 强制过滤僵尸股，仅显示同时满足【粘合+拒跌+缩量+高位】的高分标的</small>", unsafe_allow_html=True)
                 
-                if not coiled_stocks:
-                    st.info("目前没有均线极度粘合的标的。")
+                # 过滤出真正符合“吸筹特征”的标的
+                sniper_list = []
+                for x in m_res:
+                    if x['ma_spread'] < 0.05: # 第一关：必须均线粘合
+                        score = 0
+                        if x['is_rs_strong']: score += 1
+                        if x['is_vol_dry']: score += 1
+                        if x['is_uptrend']: score += 1
+                        
+                        # 只有至少满足2个附加条件才进入狙击名单
+                        if score >= 2:
+                            x['sniper_score'] = score
+                            sniper_list.append(x)
+                
+                # 按得分和 RS 相对强度排序
+                sniper_list = sorted(sniper_list, key=lambda x: (x['sniper_score'], x['rs']), reverse=True)
+                
+                if not sniper_list:
+                    st.info("目前没有满足严苛吸筹条件的标的。保持耐心。")
                 else:
-                    for j, item in enumerate(coiled_stocks):
-                        c_rank, c_val = st.columns([3, 1])
+                    for j, item in enumerate(sniper_list):
+                        c_rank, c_val = st.columns([2.5, 1.5])
                         with c_rank:
                             if st.button(f"🎯 {item['ticker']}", key=f"rk_coil_{item['ticker']}"):
                                 st.session_state.selected_stock = item['ticker']
                                 st.session_state.current_page = "StockPage"
                                 st.rerun()
                         with c_val:
-                            st.markdown(f"<div style='text-align:right; color:#854d0e; font-weight:bold; font-family: monospace; padding-top:6px;'>RS {item['rs']:+.1f}%</div>", unsafe_allow_html=True)
+                            stars = "⭐" * item['sniper_score']
+                            st.markdown(f"<div style='text-align:right; color:#854d0e; font-size:0.8rem; padding-top:6px;'>{stars}</div>", unsafe_allow_html=True)
                         st.markdown("<hr style='margin:0; border:none; border-bottom:1px solid #f1f5f9;'>", unsafe_allow_html=True)
