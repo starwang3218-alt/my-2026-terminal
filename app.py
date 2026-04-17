@@ -6,8 +6,8 @@ import pandas as pd
 from datetime import datetime
 from streamlit_autorefresh import st_autorefresh
 
-# --- 1. 全量配置管理：强耦合清单与文档 ---
-CONFIG_FILE = "strategy_terminal_v6_total.json"
+# --- 1. 配置管理：100+ 标的与深度笔记强耦合 ---
+CONFIG_FILE = "strategy_terminal_ultra_pro.json"
 
 def load_config():
     if os.path.exists(CONFIG_FILE):
@@ -16,56 +16,38 @@ def load_config():
                 return json.load(f)
         except: pass
     
-    # 核心：根据您的 CSV 和 Word 文档生成的全量初始字典
+    # 默认初始化：整合 CSV 清单与 Word 解析
     return {
         "sectors": {
             "量子": ["SKYT", "IONQ", "RGTI", "QBTS", "QUBT", "LAES", "XNDU"],
             "能源稀土": ["LAC", "MP", "USAR", "ALOY", "UAMY", "UUUU", "NEXA", "NB", "OKLO", "SMR", "BWXT", "CEG", "VST", "CW"],
             "军工国防": ["ESP", "KTOS", "PKE", "PLTR", "BBAI", "FLY", "LUNR", "RDW", "DCO", "KRMN", "DRS", "TXT", "TDY", "MRCY"],
-            "半导体": ["ADI", "NVMI", "SIMO", "FN", "SWKS", "AAOI", "SITM", "RMBS", "AMKR", "LSCC", "MTSI", "TSEM", "WOLF", "VICR"],
+            "半导体": ["ADI", "NVMI", "SIMO", "FN", "SWKS", "AAOI", "SITM", "RMBS", "AMKR", "LSCC", "MTSI", "TSEM", "WOLF", "VICR", "TTMI"],
             "数字媒体": ["RDVT", "TRAK", "OPRA", "MGNI"],
             "AI算力/应用": ["ADEA", "EXLS", "ANET", "DGII", "AEHR", "SOUN", "CRDO", "HUBS", "PEGA"],
             "电力基建": ["IESC", "BELFA", "ITRI", "ESE", "FSLR", "AROC", "LNG", "KGS", "HUBB"],
-            "航空/维修": ["VSEC", "TATT", "YSS", "FTAI", "AXON", "HEI", "AIR", "LOAR", "ISSC", "ATRO"],
-            "通信/新能": ["VEON", "DY", "EOSE", "ENVX", "QS", "KULR", "SLDP"],
-            "自动驾驶": ["INDI", "ARBE", "PDYN"]
+            "航空精工": ["VSEC", "TATT", "YSS", "FTAI", "AXON", "HEI", "AIR", "LOAR", "ISSC", "ATRO"],
+            "通信/电池": ["VEON", "DY", "EOSE", "ENVX", "QS", "KULR", "SLDP"],
+            "自动驾驶": ["INDI", "ARBE", "PDYN"],
+            "金融/系统": ["SEZL", "INTU", "PRGS", "AGYS", "NOW", "ASAN", "LZ", "BKSY", "SNPS"]
         },
         "benchmarks": {
             "量子": "QTUM", "能源稀土": "URA", "军工国防": "ITA", "半导体": "SOXX", 
-            "数字媒体": "XLC", "AI算力/应用": "IGV", "电力基建": "XLI", "航空/维修": "XAR"
+            "数字媒体": "XLC", "AI算力/应用": "IGV", "电力基建": "XLI", "航空精工": "XAR"
         },
         "notes": {
-            # --- 以下内容全量提取自您的《股票介绍.docx》 ---
-            "CRDO": "算力网络‘神经纤维’。命门在 800G/1.6T 升级周期。只要 TTM 营收年增率保持在 40% 以上即为强势。",
-            "HUBS": "SMB 数字大脑。Breeze AI 驱动 AI Agents 转型，‘按效果付费’颠覆传统 SaaS 订阅模式。",
-            "PEGA": "企业级 AI 重装装甲。LPA 自动引擎，Rule of 40 俱乐部成员，高毛利高粘性。",
-            "VICR": "GPU 供血泵。VPD 垂直供电解决 1000W+ 功耗瓶颈，EPS 弹性极大，288日周期处于上升段。",
-            "ADEA": "AI 基础协议领主。IP 授权模式，边际成本极低，与 AMD 和解后进入估值重构期。",
-            "ANET": "数字交通部。以太网架构对 InfiniBand 的平稳替代，数据中心扩产的刚需标的。",
-            "NVMI": "物理量测垄断者。光学计量领导者，服务收入占比高，属于‘税收型’防御资产。",
-            "SWKS": "新质生产力心脏。智能城市通讯模块，处于果链依赖向 5G/AI 基建转型的深坑修复期。",
-            "LUNR": "地月物流总包。掌握 9 亿订单，2026 营收翻 5 倍，正构建地月空间数据网络。",
-            "FLY": "中轻型运力。‘蓝鬼’登月成功确立其稀缺性，SpaceX 的唯一民营备份。",
-            "YSS": "卫星标准化产线。卫星界的台积电，S-CLASS 平台打破定制化魔咒，实现星座暴力部署。",
-            "RDW": "太空工厂。唯一能提供 iROSA 柔性太阳翼和微重力 3D 打印，量子安全卫星物理层。",
-            "XNDU": "量子算力先锋。虽然 P/S 极高，但靠‘Aurora’和主权级合同支撑起 2029 容错量子预期。",
-            "MRCY": "防御 AI 算力核心。困境反转，FCF 转正，掌握高超音速导弹追踪的边缘大脑。",
-            "TDY": "全能物理视网膜。Teledyne Space 整合完成，掌握深海到深空的 1.6T 感测核心。",
-            "AXON": "公共安全 OS。AI Assistant 执法逻辑，软件订阅占比突破 40%，$400 为核心支撑。",
-            "DCO": "导弹电子神经。彻底去波音化，掌握 11 亿积压订单，受益全球补库大年。",
-            "CW": "防御翻译官。边缘 5G 路由领主，解决战场极端环境下的 AI 数据通信链路。",
-            "BWXT": "核能心脏。垄断海军堆，‘Pele 计划’微堆即将临界运行，数据中心脱网能源终极期权。",
-            "FTAI": "算力救急电源。退役航发改地面涡轮，直供数据中心，Q4 交付为关键奇点。",
-            "DRS": "海军电气化先锋。哥伦比亚级核潜艇超静音电机供应商，激光武器电源管理唯一解。",
-            "KTOS": "可消耗无人机领主。XQ-58A 量产元年，将‘精英防务’降维打击为‘低成本饱和攻击’。",
-            "TXT": "垂直起降霸权。V-280 正式命名确立未来 20 年更新周期，重型机器人投送平台。",
-            "HEI": "航空零件影子领主。PMA 模式在 2026 高通胀下无敌，通过收购天线资产切入电子战。",
-            "AIR": "航材分销之王。Trax 平台普及带动毛利暴击，资产轻量化转型成功的典范。",
-            "ATRO": "机舱智能化。Qi2 无线充电和 100W USB-C 换代潮唯一受益者，订单积压创新高。",
-            "KRMN": "高超音速母机。垂直整合复合材料与弹药底座，海陆空天全域统治力。",
-            "BKSY": "空间侦察大脑。Gen-3 卫星 90 分钟自动交付，主权级订阅制收益，高频情报 OS。",
-            "LOAR": "利基零件领主。40% EBITDA 利润率，并购垄断策略极佳，通胀转嫁能力强。",
-            "ISSC": "防御电子专家。为导弹和卫星提供关键互联部件，订单随地缘波动非线性爆发。"
+            "CRDO": "算力网络‘神经纤维’。命门在 800G/1.6T 升级周期。只要 TTM 营收年增率保持 40%+ 即可。",
+            "HUBS": "SMB 数字大脑。Breeze AI 驱动 AI Agents，‘按效果付费’颠覆传统 SaaS 模式。",
+            "VICR": "GPU 供血泵。VPD 垂直供电解决 1000W+ 功耗瓶颈，EPS 弹性极大。",
+            "ADEA": "AI 基础协议领主。IP 授权模式，边际成本极低，估值重构期。",
+            "ANET": "数字交通部。以太网架构对 InfiniBand 的平稳替代。",
+            "NVMI": "物理量测垄断者。光学计量领导者，服务收入占比高，‘税收型’资产。",
+            "SWKS": "新质生产力心脏。智能城市通讯模块，处于深坑修复期。",
+            "LUNR": "地月物流总包。掌握 9 亿订单，2026 营收翻 5 倍，构建空间数据网。",
+            "MRCY": "防御 AI 算力核心。困境反转，FCF 转正，高超音速追踪大脑。",
+            "BWXT": "核能心脏。垄断海军堆，Pele 微堆即将临界，AI 能源终极期权。",
+            "FTAI": "算力救急电源。退役航发改地面涡轮，Q4 交付为关键奇点。",
+            "LOAR": "利基零件领主。40% EBITDA 利润率，通胀转嫁能力极强。"
         }
     }
 
@@ -74,63 +56,126 @@ def save_config():
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(cfg, f, ensure_ascii=False, indent=4)
 
-# --- 2. 界面渲染逻辑 ---
-st.set_page_config(page_title="2026 战略终端 (Total Notes)", layout="wide")
-st_autorefresh(interval=300000, key="refresh_all")
+# --- 2. 核心渲染初始化 ---
+st.set_page_config(page_title="2026 战略终端 (Ultra Pro)", layout="wide")
+st_autorefresh(interval=300000, key="global_refresh")
 
 if 'my_sectors' not in st.session_state:
     cfg = load_config()
-    st.session_state.my_sectors = cfg["sectors"]
-    st.session_state.my_benchmarks = cfg["benchmarks"]
-    st.session_state.my_notes = cfg.get("notes", {})
+    st.session_state.my_sectors, st.session_state.my_benchmarks, st.session_state.my_notes = cfg["sectors"], cfg["benchmarks"], cfg.get("notes", {})
+
+def to_scalar(val):
+    if isinstance(val, (pd.Series, pd.DataFrame)):
+        return float(val.iloc[0]) if not val.empty else 0.0
+    return float(val)
 
 @st.cache_data(ttl=600)
-def fetch_all(sectors, benchmarks):
-    all_t = list(set([t for ts in sectors.values() for t in ts]))
-    all_b = list(set(benchmarks.values()))
-    data = yf.download(all_t + all_b, period="2y", interval="1d", group_by='ticker', progress=False)
+def fetch_all_data(sectors, benchmarks):
+    all_tickers = list(set([t for ts in sectors.values() for t in ts]))
+    all_bench = list(set(benchmarks.values()) | {"SOXX", "XAR", "ITA", "URA", "XLI", "QTUM"})
+    full_data = yf.download(all_tickers + all_bench, period="2y", interval="1d", group_by='ticker', progress=False)
     results, b_res = [], {}
-    for b in all_b:
+
+    for b in all_bench:
         try:
-            h = data[b].dropna()
-            b_res[b] = {"chg": ((h['Close'].iloc[-1] - h['Close'].iloc[-2]) / h['Close'].iloc[-2]) * 100}
+            h = full_data[b].dropna()
+            b_res[b] = {"chg": ((to_scalar(h['Close'].iloc[-1]) - to_scalar(h['Close'].iloc[-2])) / to_scalar(h['Close'].iloc[-2])) * 100}
         except: b_res[b] = {"chg": 0.0}
-    for s_name, ts in sectors.items():
-        b_chg = b_res.get(benchmarks.get(s_name), {"chg": 0})["chg"]
-        for t in ts:
+
+    for sec_name, tickers in sectors.items():
+        b_sym = benchmarks.get(sec_name, "SPY")
+        b_chg = b_res.get(b_sym, {"chg": 0.0})["chg"]
+        for t in tickers:
             try:
-                h = data[t].dropna()
+                h = full_data[t].dropna()
                 if h.empty: continue
-                price = float(h['Close'].iloc[-1])
-                chg = ((price - float(h['Close'].iloc[-2])) / float(h['Close'].iloc[-2])) * 100
+                price = to_scalar(h['Close'].iloc[-1])
+                prev = to_scalar(h['Close'].iloc[-2])
+                day_chg = ((price - prev) / prev) * 100
                 results.append({
-                    "ticker": t, "sector": s_name, "price": price, "change": chg, "rs": chg - b_chg,
-                    "t_144d": ((price - float(h['Close'].iloc[-145]))/float(h['Close'].iloc[-145]))*100 if len(h)>=145 else 0,
-                    "t_288d": ((price - float(h['Close'].iloc[0]))/float(h['Close'].iloc[0]))*100 if len(h)>=288 else 0
+                    "ticker": t, "sector": sec_name, "price": price, "change": day_chg, "rs": day_chg - b_chg,
+                    "t_5d": ((price - to_scalar(h['Close'].iloc[-6]))/to_scalar(h['Close'].iloc[-6]))*100 if len(h)>6 else 0,
+                    "t_144d": ((price - to_scalar(h['Close'].iloc[-145]))/to_scalar(h['Close'].iloc[-145]))*100 if len(h)>=145 else 0,
+                    "t_288d": ((price - to_scalar(h['Close'].iloc[0]))/to_scalar(h['Close'].iloc[0]))*100 if len(h)>=288 else 0,
+                    "history": h.tail(6)
                 })
             except: pass
-    return results
+    return b_res, results
 
-# 数据展示
-m_res = fetch_all(st.session_state.my_sectors, st.session_state.my_benchmarks)
+# --- 3. 界面布局 ---
+st.title("🏛️ 2026 战略终端 (Ultra Pro) - 物理底座全监控")
 
-st.title("🏛️ 2026 战略终端：物理底座与 AI 新秩序")
 with st.sidebar:
-    if st.button("🔄 同步 100+ 标的数据"): st.cache_data.clear(); st.rerun()
-    st.divider()
-    edit_t = st.selectbox("编辑博弈笔记", sorted(st.session_state.my_notes.keys()))
-    st.session_state.my_notes[edit_t] = st.text_area("修改逻辑", value=st.session_state.my_notes.get(edit_t, ""), height=150)
-    if st.button("💾 保存配置"): save_config()
+    st.header("⚙️ 终端管理")
+    if st.button("🚀 刷新实时战力"): st.cache_data.clear(); st.rerun()
+    
+    with st.expander("📁 板块/代码编辑"):
+        ns = st.text_input("新增板块")
+        nb = st.text_input("对标 ETF")
+        if st.button("创建板块"):
+            if ns: st.session_state.my_sectors[ns] = []; st.session_state.my_benchmarks[ns] = nb.upper(); save_config(); st.rerun()
+        
+        target_s = st.selectbox("目标板块", list(st.session_state.my_sectors.keys()))
+        nt = st.text_input("新增代码")
+        if st.button("添加标的"):
+            if nt: st.session_state.my_sectors[target_s].append(nt.upper()); save_config(); st.rerun()
 
-# 按板块分栏展示
-tabs = st.tabs(list(st.session_state.my_sectors.keys()))
-for i, s_name in enumerate(st.session_state.my_sectors.keys()):
-    with tabs[i]:
-        stocks = [x for x in m_res if x['sector'] == s_name]
-        for s in stocks:
-            with st.container(border=True):
-                c1, c2, c3 = st.columns([1, 2, 1])
-                c1.metric(s['ticker'], f"${s['price']:.2f}", f"{s['change']:+.2f}%")
-                c2.info(f"**博弈笔记：** {st.session_state.my_notes.get(s['ticker'], '正在根据 CSV 名单等待深度补全...')}")
-                c3.write(f"Alpha: {s['rs']:+.2f}%")
-                c3.progress(min(max((s['t_288d']+100)/200, 0.0), 1.0), text=f"288日战力: {s['t_288d']:+.1f}%")
+    st.divider()
+    all_ts = sorted(list(set([t for ts in st.session_state.my_sectors.values() for t in ts])))
+    edit_t = st.selectbox("博弈逻辑记录", all_ts)
+    st.session_state.my_notes[edit_t] = st.text_area("核心解析", value=st.session_state.my_notes.get(edit_t, ""), height=150)
+    if st.button("💾 永久固化笔记"): save_config()
+
+# 数据获取
+b_res, m_res = fetch_all_data(st.session_state.my_sectors, st.session_state.my_benchmarks)
+
+# 顶部雷达
+r_cols = st.columns(len(b_res))
+for i, (sym, val) in enumerate(b_res.items()):
+    with r_cols[i]: st.metric(sym, f"{val['chg']:+.2f}%")
+
+st.divider()
+
+# 主区域排版
+l_col, r_col = st.columns([4, 1.2])
+
+with l_col:
+    tabs = st.tabs(list(st.session_state.my_sectors.keys()))
+    for i, s_name in enumerate(st.session_state.my_sectors.keys()):
+        with tabs[i]:
+            sector_stocks = [x for x in m_res if x['sector'] == s_name]
+            for s in sector_stocks:
+                with st.container(border=True):
+                    c1, c2, c3 = st.columns([1.5, 4, 0.5])
+                    with c1:
+                        st.markdown(f"### {s['ticker']}")
+                        st.markdown(f"<h2 style='margin:0;'>${s['price']:.2f}</h2>", unsafe_allow_html=True)
+                        st.markdown(f"<b style='color:{'#28a745' if s['change']>=0 else '#dc3545'}; font-size:1.2rem;'>{s['change']:+.2f}%</b>", unsafe_allow_html=True)
+                        st.link_button("📈 K线链接", f"https://www.tradingview.com/chart/?symbol={s['ticker']}")
+                    
+                    with c2:
+                        # 五日涨跌幅 K 线模拟
+                        h_cols = st.columns(5)
+                        for idx in range(1, 6):
+                            with h_cols[idx-1]:
+                                cur, pre = to_scalar(s['history']['Close'].iloc[idx]), to_scalar(s['history']['Close'].iloc[idx-1])
+                                d_chg = ((cur - pre) / pre) * 100
+                                color = "#28a745" if d_chg >= 0 else "#dc3545"
+                                st.markdown(f"<div style='text-align:center;'><small>{s['history'].index[idx].strftime('%m-%d')}</small><br><b style='color:{color};'>{d_chg:+.1f}%</b><br><small>${cur:.1f}</small></div>", unsafe_allow_html=True)
+                        
+                        st.markdown(f"<div style='background:rgba(0,0,0,0.03); padding:8px; border-radius:5px; margin-top:15px;'><b>5日线: {s['t_5d']:+.2f}%</b> | 144日: <b>{s['t_144d']:+.1f}%</b> | 288日: <b>{s['t_288d']:+.1f}%</b></div>", unsafe_allow_html=True)
+                        with st.expander("💡 深度解析"): st.write(st.session_state.my_notes.get(s['ticker'], "等待录入..."))
+                    
+                    with c3:
+                        if st.button("🗑️", key=f"del_{s['ticker']}"):
+                            st.session_state.my_sectors[s_name].remove(s['ticker']); save_config(); st.rerun()
+
+with r_col:
+    st.subheader("🏆 战力排行")
+    rank_tabs = st.tabs(["日内", "5日", "144d", "288d"])
+    rank_keys = [('change', '今日'), ('t_5d', '5日'), ('t_144d', '144d'), ('t_288d', '288d')]
+    for i, (key, label) in enumerate(rank_keys):
+        with rank_tabs[i]:
+            sorted_m = sorted(m_res, key=lambda x: x[key], reverse=True)
+            for j, item in enumerate(sorted_m[:20]):
+                st.markdown(f"{j+1}. **{item['ticker']}** `{item[key]:+.1f}%`")
