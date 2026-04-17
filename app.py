@@ -6,40 +6,29 @@ import pandas as pd
 from datetime import datetime
 from streamlit_autorefresh import st_autorefresh
 
-# --- 0. 全局 UI 压缩渲染 (解决行距过宽的核心魔法) ---
+# --- 0. 全局 UI 压缩渲染 ---
 st.set_page_config(page_title="2026 战略终端 (Pro UI)", layout="wide")
 st.markdown("""
 <style>
-/* 极致压缩排行榜内部的间距 */
-div[data-testid="column"] {
-    margin-bottom: -15px !important;
-}
-/* 缩小原生按钮的高度与内边距，使其呈现纯文本的紧凑感 */
+div[data-testid="column"] { margin-bottom: -15px !important; }
 div.stButton button {
-    min-height: 24px !important;
-    height: 32px !important;
-    padding-top: 2px !important;
-    padding-bottom: 2px !important;
-    background-color: transparent !important;
-    border: none !important;
-    color: #1e293b !important;
-    font-weight: 700 !important;
+    min-height: 24px !important; height: 32px !important;
+    padding-top: 2px !important; padding-bottom: 2px !important;
+    background-color: transparent !important; border: none !important;
+    color: #1e293b !important; font-weight: 700 !important;
     justify-content: flex-start !important;
 }
-div.stButton button:hover {
-    color: #3b82f6 !important;
-}
+div.stButton button:hover { color: #3b82f6 !important; }
 </style>
 """, unsafe_allow_html=True)
 
 # --- 1. 配置管理 ---
-CONFIG_FILE = "strategy_terminal_ultra_pro_v17.json"
+CONFIG_FILE = "strategy_terminal_ultra_pro_v18.json"
 
 def load_config():
     if os.path.exists(CONFIG_FILE):
         try:
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f: return json.load(f)
         except: pass
     return {
         "sectors": {
@@ -102,23 +91,35 @@ def fetch_all_data(sectors, benchmarks):
         for t in tickers:
             try:
                 h = full_data[t].dropna()
-                # 核心防撞层：防停牌、防退市、防数据缺失
                 if len(h) < 2: continue
                 price, prev = to_scalar(h['Close'].iloc[-1]), to_scalar(h['Close'].iloc[-2])
                 if prev == 0: continue
                 
+                # 计算均线系统 (SMA)
+                h['MA5'] = h['Close'].rolling(window=5).mean()
+                h['MA12'] = h['Close'].rolling(window=12).mean()
+                h['MA30'] = h['Close'].rolling(window=30).mean()
+                h['MA144'] = h['Close'].rolling(window=144).mean()
+                h['MA288'] = h['Close'].rolling(window=288).mean()
+
                 day_chg = ((price - prev) / prev) * 100
                 results.append({
                     "ticker": t, "sector": sec_name, "price": price, "change": day_chg, "rs": day_chg - b_chg,
                     "t_5d": ((price - to_scalar(h['Close'].iloc[-6]))/to_scalar(h['Close'].iloc[-6]))*100 if len(h)>=6 and to_scalar(h['Close'].iloc[-6])!=0 else 0,
                     "t_144d": ((price - to_scalar(h['Close'].iloc[-145]))/to_scalar(h['Close'].iloc[-145]))*100 if len(h)>=145 and to_scalar(h['Close'].iloc[-145])!=0 else 0,
                     "t_288d": ((price - to_scalar(h['Close'].iloc[-289]))/to_scalar(h['Close'].iloc[-289]))*100 if len(h)>=289 and to_scalar(h['Close'].iloc[-289])!=0 else 0,
-                    "history": h.tail(6)
+                    "history": h.tail(6),
+                    # 存储最新均线数值
+                    "ma5": to_scalar(h['MA5'].iloc[-1]) if len(h)>=5 else 0,
+                    "ma12": to_scalar(h['MA12'].iloc[-1]) if len(h)>=12 else 0,
+                    "ma30": to_scalar(h['MA30'].iloc[-1]) if len(h)>=30 else 0,
+                    "ma144": to_scalar(h['MA144'].iloc[-1]) if len(h)>=144 else 0,
+                    "ma288": to_scalar(h['MA288'].iloc[-1]) if len(h)>=288 else 0
                 })
             except: pass
     return b_res, results
 
-# --- 新增：独立研报与深度编辑页 ---
+# --- 新增：带有均线雷达的独立研报页 ---
 def render_stock_page(ticker, m_res):
     st.button("⬅️ 返回战略大盘", on_click=lambda: setattr(st.session_state, 'current_page', 'Dashboard'))
     
@@ -142,7 +143,6 @@ def render_stock_page(ticker, m_res):
             hist_len = len(s['history'])
             for idx in range(1, 6):
                 with h_cols[idx-1]:
-                    # 保护层：防止新股 K线不足 5 天导致报错崩溃
                     if idx < hist_len:
                         cur, pre = to_scalar(s['history']['Close'].iloc[idx]), to_scalar(s['history']['Close'].iloc[idx-1])
                         d_chg = ((cur - pre) / pre) * 100 if pre != 0 else 0
@@ -159,6 +159,35 @@ def render_stock_page(ticker, m_res):
                         st.markdown("<div style='text-align:center; padding: 10px; color:#94a3b8;'>数据不足</div>", unsafe_allow_html=True)
             
             st.markdown(f"<div style='background:#f1f5f9; padding:10px; border-radius:8px; margin-top:15px; font-size:1rem; border-left:4px solid #3b82f6;'><b>5日累积: {s['t_5d']:+.2f}%</b> | 144日: <b>{s['t_144d']:+.1f}%</b> | 288日战力: <b>{s['t_288d']:+.1f}%</b></div>", unsafe_allow_html=True)
+
+            # --- 核心新增：均线系统与多头判定 ---
+            ma5, ma12, ma30, ma144, ma288, price = s['ma5'], s['ma12'], s['ma30'], s['ma144'], s['ma288'], s['price']
+            trend_html = ""
+            
+            if ma288 > 0 and (price > ma5 > ma12 > ma30 > ma144 > ma288):
+                trend_html = "<span style='background-color:#dcfce7; color:#166534; padding:4px 8px; border-radius:4px; font-weight:bold;'>🔥 战力全开 (绝对多头排列)</span>"
+            elif ma288 > 0 and price < ma288:
+                trend_html = "<span style='background-color:#fee2e2; color:#991b1b; padding:4px 8px; border-radius:4px; font-weight:bold;'>🧊 战略深水区 (跌破288日线)</span>"
+            elif ma288 == 0:
+                trend_html = "<span style='background-color:#f1f5f9; color:#475569; padding:4px 8px; border-radius:4px; font-weight:bold;'>⏳ 上市不足288日 (数据收集中)</span>"
+            else:
+                trend_html = "<span style='background-color:#fef9c3; color:#854d0e; padding:4px 8px; border-radius:4px; font-weight:bold;'>⚖️ 均线交织 (震荡博弈中)</span>"
+            
+            dev_288 = ((price - ma288) / ma288 * 100) if ma288 > 0 else 0
+            dev_color = "#dc3545" if dev_288 < 0 else "#28a745"
+
+            st.markdown(f"""
+            <div style='background:#ffffff; border:1.5px solid #e2e8f0; padding:12px; border-radius:8px; margin-top:10px;'>
+                <div style='margin-bottom:10px;'>{trend_html} <span style='margin-left:15px; font-size:0.95rem; color:#475569;'>当前偏离 288日均线: <b style='color:{dev_color}; font-size:1.1rem;'>{dev_288:+.2f}%</b></span></div>
+                <div style='display:flex; justify-content:space-between; font-size:0.9rem; color:#475569; font-family:monospace; background:#f8fafc; padding:8px; border-radius:4px;'>
+                    <span>MA5: <b>${ma5:.2f}</b></span> |
+                    <span>MA12: <b>${ma12:.2f}</b></span> |
+                    <span>MA30: <b>${ma30:.2f}</b></span> |
+                    <span>MA144: <b>${ma144:.2f}</b></span> |
+                    <span>MA288: <b>${ma288:.2f}</b></span>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
 
     st.divider()
     
@@ -264,13 +293,10 @@ else:
             for i, (key, label) in enumerate(rank_keys):
                 with rank_tabs[i]:
                     sorted_m = sorted(m_res, key=lambda x: x[key], reverse=True)
-                    
-                    # 稳定且极致紧凑的 Streamlit 按钮列表
                     for j, item in enumerate(sorted_m):
                         val_color = "#dc3545" if item[key] < 0 else "#28a745"
                         c_rank, c_val = st.columns([3, 1])
                         with c_rank:
-                            # 点击平滑进入研报详情页，不引发硬刷新报错
                             if st.button(f"{j+1}. {item['ticker']}", key=f"rk_{key}_{item['ticker']}"):
                                 st.session_state.selected_stock = item['ticker']
                                 st.session_state.current_page = "StockPage"
