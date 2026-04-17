@@ -6,8 +6,34 @@ import pandas as pd
 from datetime import datetime
 from streamlit_autorefresh import st_autorefresh
 
+# --- 0. 全局 UI 压缩渲染 (解决行距过宽的核心魔法) ---
+st.set_page_config(page_title="2026 战略终端 (Pro UI)", layout="wide")
+st.markdown("""
+<style>
+/* 极致压缩排行榜内部的间距 */
+div[data-testid="column"] {
+    margin-bottom: -15px !important;
+}
+/* 缩小原生按钮的高度与内边距，使其呈现纯文本的紧凑感 */
+div.stButton button {
+    min-height: 24px !important;
+    height: 32px !important;
+    padding-top: 2px !important;
+    padding-bottom: 2px !important;
+    background-color: transparent !important;
+    border: none !important;
+    color: #1e293b !important;
+    font-weight: 700 !important;
+    justify-content: flex-start !important;
+}
+div.stButton button:hover {
+    color: #3b82f6 !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
 # --- 1. 配置管理 ---
-CONFIG_FILE = "strategy_terminal_ultra_pro_v15.json"
+CONFIG_FILE = "strategy_terminal_ultra_pro_v17.json"
 
 def load_config():
     if os.path.exists(CONFIG_FILE):
@@ -44,8 +70,7 @@ def save_config():
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(cfg, f, ensure_ascii=False, indent=4)
 
-# --- 2. 核心渲染初始化 ---
-st.set_page_config(page_title="2026 战略终端 (Pro UI)", layout="wide")
+# --- 2. 系统核心初始化 ---
 st_autorefresh(interval=300000, key="global_refresh")
 
 if 'my_sectors' not in st.session_state:
@@ -55,8 +80,7 @@ if 'current_page' not in st.session_state: st.session_state.current_page = "Dash
 if 'selected_stock' not in st.session_state: st.session_state.selected_stock = None
 
 def to_scalar(val):
-    if isinstance(val, (pd.Series, pd.DataFrame)):
-        return float(val.iloc[0]) if not val.empty else 0.0
+    if isinstance(val, (pd.Series, pd.DataFrame)): return float(val.iloc[0]) if not val.empty else 0.0
     return float(val)
 
 @st.cache_data(ttl=600)
@@ -78,33 +102,35 @@ def fetch_all_data(sectors, benchmarks):
         for t in tickers:
             try:
                 h = full_data[t].dropna()
-                if h.empty: continue
+                # 核心防撞层：防停牌、防退市、防数据缺失
+                if len(h) < 2: continue
                 price, prev = to_scalar(h['Close'].iloc[-1]), to_scalar(h['Close'].iloc[-2])
+                if prev == 0: continue
+                
                 day_chg = ((price - prev) / prev) * 100
                 results.append({
                     "ticker": t, "sector": sec_name, "price": price, "change": day_chg, "rs": day_chg - b_chg,
-                    "t_5d": ((price - to_scalar(h['Close'].iloc[-6]))/to_scalar(h['Close'].iloc[-6]))*100 if len(h)>6 else 0,
-                    "t_144d": ((price - to_scalar(h['Close'].iloc[-145]))/to_scalar(h['Close'].iloc[-145]))*100 if len(h)>=145 else 0,
-                    "t_288d": ((price - to_scalar(h['Close'].iloc[-289]))/to_scalar(h['Close'].iloc[-289]))*100 if len(h)>=289 else 0,
+                    "t_5d": ((price - to_scalar(h['Close'].iloc[-6]))/to_scalar(h['Close'].iloc[-6]))*100 if len(h)>=6 and to_scalar(h['Close'].iloc[-6])!=0 else 0,
+                    "t_144d": ((price - to_scalar(h['Close'].iloc[-145]))/to_scalar(h['Close'].iloc[-145]))*100 if len(h)>=145 and to_scalar(h['Close'].iloc[-145])!=0 else 0,
+                    "t_288d": ((price - to_scalar(h['Close'].iloc[-289]))/to_scalar(h['Close'].iloc[-289]))*100 if len(h)>=289 and to_scalar(h['Close'].iloc[-289])!=0 else 0,
                     "history": h.tail(6)
                 })
             except: pass
     return b_res, results
 
-# --- 新增：沉浸式研报与编辑页 ---
+# --- 新增：独立研报与深度编辑页 ---
 def render_stock_page(ticker, m_res):
     st.button("⬅️ 返回战略大盘", on_click=lambda: setattr(st.session_state, 'current_page', 'Dashboard'))
     
     s = next((x for x in m_res if x['ticker'] == ticker), None)
     if not s:
-        st.error("数据加载失败，请返回大盘重试。")
+        st.error("⚠️ 数据加载失败，该标的可能处于停牌状态，请返回大盘。")
         return
 
     st.markdown(f"## 🎯 战术锁定：{s['ticker']}")
     
-    # 完全复用主页的 UI 方块
     with st.container(border=True):
-        c1, c2, c3 = st.columns([1.5, 4.5, 0.5])
+        c1, c2 = st.columns([1.5, 4.5])
         with c1:
             st.markdown(f"### {s['ticker']}")
             st.markdown(f"<h2 style='margin:0;'>${s['price']:.2f}</h2>", unsafe_allow_html=True)
@@ -113,37 +139,41 @@ def render_stock_page(ticker, m_res):
         
         with c2:
             h_cols = st.columns(5)
+            hist_len = len(s['history'])
             for idx in range(1, 6):
                 with h_cols[idx-1]:
-                    cur, pre = to_scalar(s['history']['Close'].iloc[idx]), to_scalar(s['history']['Close'].iloc[idx-1])
-                    d_chg = ((cur - pre) / pre) * 100
-                    color = "#28a745" if d_chg >= 0 else "#dc3545"
-                    st.markdown(f"""
-                        <div style='text-align:center; border: 1.5px solid #e2e8f0; padding: 10px; border-radius: 10px; background-color: #f8fafc; margin: 2px;'>
-                            <small style='color:#64748b;'>{s['history'].index[idx].strftime('%m-%d')}</small><br>
-                            <b style='color:{color}; font-size: 1.4rem;'>{d_chg:+.1f}%</b><br>
-                            <small style='font-weight:bold; font-size: 1.1rem;'>${cur:.1f}</small>
-                        </div>
-                    """, unsafe_allow_html=True)
+                    # 保护层：防止新股 K线不足 5 天导致报错崩溃
+                    if idx < hist_len:
+                        cur, pre = to_scalar(s['history']['Close'].iloc[idx]), to_scalar(s['history']['Close'].iloc[idx-1])
+                        d_chg = ((cur - pre) / pre) * 100 if pre != 0 else 0
+                        color = "#28a745" if d_chg >= 0 else "#dc3545"
+                        dt_str = s['history'].index[idx].strftime('%m-%d')
+                        st.markdown(f"""
+                            <div style='text-align:center; border: 1.5px solid #e2e8f0; padding: 10px; border-radius: 10px; background-color: #f8fafc; margin: 2px;'>
+                                <small style='color:#64748b;'>{dt_str}</small><br>
+                                <b style='color:{color}; font-size: 1.4rem;'>{d_chg:+.1f}%</b><br>
+                                <small style='font-weight:bold; font-size: 1.1rem;'>${cur:.1f}</small>
+                            </div>
+                        """, unsafe_allow_html=True)
+                    else:
+                        st.markdown("<div style='text-align:center; padding: 10px; color:#94a3b8;'>数据不足</div>", unsafe_allow_html=True)
             
             st.markdown(f"<div style='background:#f1f5f9; padding:10px; border-radius:8px; margin-top:15px; font-size:1rem; border-left:4px solid #3b82f6;'><b>5日累积: {s['t_5d']:+.2f}%</b> | 144日: <b>{s['t_144d']:+.1f}%</b> | 288日战力: <b>{s['t_288d']:+.1f}%</b></div>", unsafe_allow_html=True)
 
     st.divider()
     
-    # 专属的编辑与显示区
-    st.markdown("### ✍️ 深度解析 (实时编辑)")
+    st.markdown("### ✍️ 深度解析 (实时编辑室)")
     current_note = st.session_state.my_notes.get(ticker, "")
     
-    # 左侧输入，右侧实时预览 Markdown
     col_edit, col_preview = st.columns([1, 1])
     with col_edit:
         new_note = st.text_area(f"撰写 {ticker} 的博弈逻辑 (支持 Markdown)：", value=current_note, height=500)
         if st.button("💾 保存解析内容", type="primary", use_container_width=True):
             st.session_state.my_notes[ticker] = new_note
             save_config()
-            st.success("✅ 笔记已永久保存！")
+            st.success("✅ 笔记已永久保存至本地！")
     with col_preview:
-        st.markdown("**🔍 内容预览**")
+        st.markdown("**🔍 渲染预览**")
         with st.container(border=True, height=500):
             if new_note:
                 st.markdown(new_note)
@@ -165,7 +195,7 @@ with st.sidebar:
         nb = st.text_input("对标 ETF")
         if st.button("📂 创建"):
             if ns: st.session_state.my_sectors[ns] = []; st.session_state.my_benchmarks[ns] = nb.upper(); save_config(); st.rerun()
-        if st.button("🗑️ 删除该板块", type="secondary"):
+        if st.button("🗑️ 删除该板块"):
             del st.session_state.my_sectors[target_s]; save_config(); st.rerun()
             
     st.divider()
@@ -176,11 +206,10 @@ with st.sidebar:
 
 b_res, m_res = fetch_all_data(st.session_state.my_sectors, st.session_state.my_benchmarks)
 
-# 页面路由切换
 if st.session_state.current_page == "StockPage":
     render_stock_page(st.session_state.selected_stock, m_res)
 else:
-    st.title("🏛️ 2026 战略资产终端 (Pro UI 重构)")
+    st.title("🏛️ 2026 战略资产终端 (终极排版)")
     r_cols = st.columns(len(b_res))
     for i, (sym, val) in enumerate(b_res.items()):
         with r_cols[i]: st.metric(sym, f"{val['chg']:+.2f}%")
@@ -205,18 +234,20 @@ else:
                         
                         with c2:
                             h_cols = st.columns(5)
+                            hist_len = len(s['history'])
                             for idx in range(1, 6):
                                 with h_cols[idx-1]:
-                                    cur, pre = to_scalar(s['history']['Close'].iloc[idx]), to_scalar(s['history']['Close'].iloc[idx-1])
-                                    d_chg = ((cur - pre) / pre) * 100
-                                    color = "#28a745" if d_chg >= 0 else "#dc3545"
-                                    st.markdown(f"""
-                                        <div style='text-align:center; border: 1.5px solid #e2e8f0; padding: 10px; border-radius: 10px; background-color: #f8fafc; margin: 2px;'>
-                                            <small style='color:#64748b;'>{s['history'].index[idx].strftime('%m-%d')}</small><br>
-                                            <b style='color:{color}; font-size: 1.4rem;'>{d_chg:+.1f}%</b><br>
-                                            <small style='font-weight:bold; font-size: 1.1rem;'>${cur:.1f}</small>
-                                        </div>
-                                    """, unsafe_allow_html=True)
+                                    if idx < hist_len:
+                                        cur, pre = to_scalar(s['history']['Close'].iloc[idx]), to_scalar(s['history']['Close'].iloc[idx-1])
+                                        d_chg = ((cur - pre) / pre) * 100 if pre != 0 else 0
+                                        color = "#28a745" if d_chg >= 0 else "#dc3545"
+                                        st.markdown(f"""
+                                            <div style='text-align:center; border: 1.5px solid #e2e8f0; padding: 10px; border-radius: 10px; background-color: #f8fafc; margin: 2px;'>
+                                                <small style='color:#64748b;'>{s['history'].index[idx].strftime('%m-%d')}</small><br>
+                                                <b style='color:{color}; font-size: 1.4rem;'>{d_chg:+.1f}%</b><br>
+                                                <small style='font-weight:bold; font-size: 1.1rem;'>${cur:.1f}</small>
+                                            </div>
+                                        """, unsafe_allow_html=True)
                             
                             st.markdown(f"<div style='background:#f1f5f9; padding:10px; border-radius:8px; margin-top:15px; font-size:1rem; border-left:4px solid #3b82f6;'><b>5日累积: {s['t_5d']:+.2f}%</b> | 144日: <b>{s['t_144d']:+.1f}%</b> | 288日战力: <b>{s['t_288d']:+.1f}%</b></div>", unsafe_allow_html=True)
                             with st.expander("🔍 深度解析"): st.write(st.session_state.my_notes.get(s['ticker'], "等待调研录入..."))
@@ -233,11 +264,13 @@ else:
             for i, (key, label) in enumerate(rank_keys):
                 with rank_tabs[i]:
                     sorted_m = sorted(m_res, key=lambda x: x[key], reverse=True)
+                    
+                    # 稳定且极致紧凑的 Streamlit 按钮列表
                     for j, item in enumerate(sorted_m):
                         val_color = "#dc3545" if item[key] < 0 else "#28a745"
                         c_rank, c_val = st.columns([3, 1])
                         with c_rank:
-                            # 核心：排行榜代码点击后，触发 current_page 切换
+                            # 点击平滑进入研报详情页，不引发硬刷新报错
                             if st.button(f"{j+1}. {item['ticker']}", key=f"rk_{key}_{item['ticker']}"):
                                 st.session_state.selected_stock = item['ticker']
                                 st.session_state.current_page = "StockPage"
