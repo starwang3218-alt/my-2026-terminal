@@ -23,7 +23,7 @@ div.stButton button:hover { color: #3b82f6 !important; }
 """, unsafe_allow_html=True)
 
 # --- 1. 配置管理 ---
-CONFIG_FILE = "strategy_terminal_ultra_pro_v21.json"
+CONFIG_FILE = "strategy_terminal_ultra_pro_v22.json"
 
 def load_config():
     if os.path.exists(CONFIG_FILE):
@@ -138,6 +138,21 @@ def fetch_all_data(sectors, benchmarks):
                 is_vol_dry = vol_dry_ratio < 0.8
                 is_uptrend = price > to_scalar(h['MA144'].iloc[-1]) if len(h)>=144 else False
 
+                # --- 核心更新：护城河雷达 (逆风局护盘率) ---
+                defense_rate = 0.0
+                if b_h is not None and len(h) >= 30 and len(b_h) >= 30:
+                    s_daily_returns = h['Close'].tail(31).pct_change().dropna()
+                    b_daily_returns = b_h['Close'].pct_change().dropna()
+                    common_idx = s_daily_returns.index.intersection(b_daily_returns.index)
+                    s_aligned = s_daily_returns.loc[common_idx]
+                    b_aligned = b_daily_returns.loc[common_idx]
+                    
+                    down_days_mask = b_aligned < 0
+                    total_down_days = down_days_mask.sum()
+                    if total_down_days > 0:
+                        outperform_down_days = (s_aligned[down_days_mask] > b_aligned[down_days_mask]).sum()
+                        defense_rate = (outperform_down_days / total_down_days) * 100
+
                 results.append({
                     "ticker": t, "sector": sec_name, "price": price, "change": s_ret_1, "rs": rs_1d,
                     "t_5d": s_ret_5, "t_144d": s_ret_144, 
@@ -148,12 +163,13 @@ def fetch_all_data(sectors, benchmarks):
                     "ma288": to_scalar(h['MA288'].iloc[-1]) if len(h)>=288 else 0,
                     "ma_spread": ma_spread, "vol_ratio": vol_dry_ratio,
                     "is_rs_strong": is_rs_strong, "is_vol_dry": is_vol_dry, "is_uptrend": is_uptrend,
-                    "rs_5d": rs_5d, "rs_30d": rs_30d, "rs_144d": rs_144d, "b_sym": b_sym
+                    "rs_5d": rs_5d, "rs_30d": rs_30d, "rs_144d": rs_144d, "b_sym": b_sym,
+                    "defense_rate": defense_rate
                 })
             except: pass
     return b_res, results
 
-# --- 新增：带有深度诊断的独立研报页 ---
+# --- 带有深度诊断的独立研报页 ---
 def render_stock_page(ticker, m_res):
     st.button("⬅️ 返回战略大盘", on_click=lambda: setattr(st.session_state, 'current_page', 'Dashboard'))
     
@@ -195,25 +211,28 @@ def render_stock_page(ticker, m_res):
             ma5, ma12, ma30, ma144, ma288, price = s['ma5'], s['ma12'], s['ma30'], s['ma144'], s['ma288'], s['price']
             
             tags = []
-            if s['ma_spread'] < 0.05: tags.append("<span style='background:#fef08a; color:#854d0e; padding:3px 6px; border-radius:4px;'>🎯 均线极度粘合</span>")
-            if s['is_rs_strong']: tags.append("<span style='background:#dcfce7; color:#166534; padding:3px 6px; border-radius:4px;'>🛡️ 30日RS硬核托底</span>")
-            if s['is_vol_dry']: tags.append("<span style='background:#e0e7ff; color:#3730a3; padding:3px 6px; border-radius:4px;'>🤫 成交量极度萎缩</span>")
-            if s['is_uptrend']: tags.append("<span style='background:#dbeafe; color:#1e40af; padding:3px 6px; border-radius:4px;'>⛰️ 处于长线之上</span>")
+            if s['ma_spread'] < 0.05: tags.append("<span style='background:#fef08a; color:#854d0e; padding:3px 6px; border-radius:4px;'>🎯 均线粘合</span>")
+            if s['is_rs_strong']: tags.append("<span style='background:#dcfce7; color:#166534; padding:3px 6px; border-radius:4px;'>🛡️ RS硬核托底</span>")
+            if s['is_vol_dry']: tags.append("<span style='background:#e0e7ff; color:#3730a3; padding:3px 6px; border-radius:4px;'>🤫 成交量萎缩</span>")
+            if s['is_uptrend']: tags.append("<span style='background:#dbeafe; color:#1e40af; padding:3px 6px; border-radius:4px;'>⛰️ 长线之上</span>")
             
-            tags_html = " ".join(tags) if tags else "<span style='color:#64748b;'>未检测到明显吸筹特征</span>"
+            tags_html = " ".join(tags) if tags else "<span style='color:#64748b;'>未检测到明显特征</span>"
             dev_288 = ((price - ma288) / ma288 * 100) if ma288 > 0 else 0
 
             c_rs5 = "#dc3545" if s['rs_5d'] < 0 else "#28a745"
             c_rs30 = "#dc3545" if s['rs_30d'] < 0 else "#28a745"
             c_rs144 = "#dc3545" if s['rs_144d'] < 0 else "#28a745"
+            
+            # 护城河颜色判定
+            c_def = "#28a745" if s['defense_rate'] >= 60 else ("#854d0e" if s['defense_rate'] >= 40 else "#dc3545")
 
-            # ---- 核心修复点：强制消除前置空格，完美渲染 HTML 面板 ----
             html_content = f"""
 <div style='background:#ffffff; border:1.5px solid #e2e8f0; padding:12px; border-radius:8px; margin-top:10px;'>
 <div style='margin-bottom:8px; font-size:0.95rem;'><b>主力行为：</b> {tags_html}</div>
 <div style='margin-bottom:8px; font-size:0.9rem; color:#475569;'>偏离 288日均线: <b style='color:{"#dc3545" if dev_288 < 0 else "#28a745"};'>{dev_288:+.2f}%</b> (量缩比: {s['vol_ratio']:.2f})</div>
 <div style='display:flex; justify-content:space-between; align-items:center; background:#f8fafc; padding:8px; border-radius:6px; margin-bottom:8px;'>
-<span style='font-size:0.85rem; color:#64748b; font-weight:bold;'>对比基准: {s['b_sym']}</span>
+<span style='font-size:0.85rem; color:#64748b; font-weight:bold;'>基准: {s['b_sym']}</span>
+<span style='font-size:0.9rem;'>逆风护盘率: <b style='color:{c_def}; background:#f1f5f9; padding:2px 4px; border-radius:4px;'>{s['defense_rate']:.0f}%</b></span>
 <span style='font-size:0.9rem;'>RS 5日: <b style='color:{c_rs5};'>{s['rs_5d']:+.1f}%</b></span>
 <span style='font-size:0.9rem;'>RS 30日: <b style='color:{c_rs30};'>{s['rs_30d']:+.1f}%</b></span>
 <span style='font-size:0.9rem;'>RS 144日: <b style='color:{c_rs144};'>{s['rs_144d']:+.1f}%</b></span>
@@ -269,7 +288,7 @@ b_res, m_res = fetch_all_data(st.session_state.my_sectors, st.session_state.my_b
 if st.session_state.current_page == "StockPage":
     render_stock_page(st.session_state.selected_stock, m_res)
 else:
-    st.title("🏛️ 2026 战略资产终端 (终极 RS 修复版)")
+    st.title("🏛️ 2026 战略资产终端 (V22 护城河雷达)")
     r_cols = st.columns(len(b_res))
     for i, (sym, val) in enumerate(b_res.items()):
         with r_cols[i]: st.metric(sym, f"{val['chg']:+.2f}%")
@@ -337,7 +356,7 @@ else:
                         st.markdown("<hr style='margin:0; border:none; border-bottom:1px solid #f1f5f9;'>", unsafe_allow_html=True)
             
             with rank_tabs[4]:
-                st.markdown("<small style='color:#64748b;'>* 扫描多均线粘合，且 5日/30日 必须双重跑赢大盘的硬核标的</small>", unsafe_allow_html=True)
+                st.markdown("<small style='color:#64748b;'>* 扫描多均线粘合标的，评级包含【逆风护盘率】</small>", unsafe_allow_html=True)
                 
                 sniper_list = []
                 for x in m_res:
@@ -346,12 +365,13 @@ else:
                         if x['is_rs_strong']: score += 1
                         if x['is_vol_dry']: score += 1
                         if x['is_uptrend']: score += 1
+                        if x['defense_rate'] >= 60: score += 1 # 新增第四颗星的门槛：逆风护盘率 >= 60%
                         
                         if score >= 2:
                             x['sniper_score'] = score
                             sniper_list.append(x)
                 
-                sniper_list = sorted(sniper_list, key=lambda x: (x['sniper_score'], x['rs_30d']), reverse=True)
+                sniper_list = sorted(sniper_list, key=lambda x: (x['sniper_score'], x['defense_rate']), reverse=True)
                 
                 if not sniper_list:
                     st.info("目前没有满足严苛吸筹条件的标的。保持耐心。")
