@@ -7,7 +7,7 @@ from datetime import datetime
 from streamlit_autorefresh import st_autorefresh
 
 # --- 1. 配置管理 ---
-CONFIG_FILE = "strategy_terminal_ultra_pro_v16.json"
+CONFIG_FILE = "strategy_terminal_ultra_pro_v15.json"
 
 def load_config():
     if os.path.exists(CONFIG_FILE):
@@ -53,21 +53,6 @@ if 'my_sectors' not in st.session_state:
     st.session_state.my_sectors, st.session_state.my_benchmarks, st.session_state.my_notes = cfg["sectors"], cfg["benchmarks"], cfg.get("notes", {})
 if 'current_page' not in st.session_state: st.session_state.current_page = "Dashboard"
 if 'selected_stock' not in st.session_state: st.session_state.selected_stock = None
-
-# 核心魔法：捕捉纯 HTML 链接传来的 URL 参数，并转化为页面切换指令
-try:
-    if hasattr(st, "query_params") and "stock" in st.query_params:
-        st.session_state.selected_stock = st.query_params["stock"].upper()
-        st.session_state.current_page = "StockPage"
-        st.query_params.clear() # 清除参数，保证“返回大盘”功能正常
-    elif hasattr(st, "experimental_get_query_params"):
-        params = st.experimental_get_query_params()
-        if "stock" in params:
-            st.session_state.selected_stock = params["stock"][0].upper()
-            st.session_state.current_page = "StockPage"
-            st.experimental_set_query_params()
-except:
-    pass
 
 def to_scalar(val):
     if isinstance(val, (pd.Series, pd.DataFrame)):
@@ -117,8 +102,9 @@ def render_stock_page(ticker, m_res):
 
     st.markdown(f"## 🎯 战术锁定：{s['ticker']}")
     
+    # 完全复用主页的 UI 方块
     with st.container(border=True):
-        c1, c2 = st.columns([1.5, 4.5])
+        c1, c2, c3 = st.columns([1.5, 4.5, 0.5])
         with c1:
             st.markdown(f"### {s['ticker']}")
             st.markdown(f"<h2 style='margin:0;'>${s['price']:.2f}</h2>", unsafe_allow_html=True)
@@ -144,9 +130,11 @@ def render_stock_page(ticker, m_res):
 
     st.divider()
     
+    # 专属的编辑与显示区
     st.markdown("### ✍️ 深度解析 (实时编辑)")
     current_note = st.session_state.my_notes.get(ticker, "")
     
+    # 左侧输入，右侧实时预览 Markdown
     col_edit, col_preview = st.columns([1, 1])
     with col_edit:
         new_note = st.text_area(f"撰写 {ticker} 的博弈逻辑 (支持 Markdown)：", value=current_note, height=500)
@@ -188,6 +176,7 @@ with st.sidebar:
 
 b_res, m_res = fetch_all_data(st.session_state.my_sectors, st.session_state.my_benchmarks)
 
+# 页面路由切换
 if st.session_state.current_page == "StockPage":
     render_stock_page(st.session_state.selected_stock, m_res)
 else:
@@ -244,20 +233,15 @@ else:
             for i, (key, label) in enumerate(rank_keys):
                 with rank_tabs[i]:
                     sorted_m = sorted(m_res, key=lambda x: x[key], reverse=True)
-                    
-                    # 核心解法：使用纯 HTML 极致压缩行距，同时通过 ?stock= 传导参数切页
-                    html_str = "<div style='display:flex; flex-direction:column; gap:4px;'>"
                     for j, item in enumerate(sorted_m):
                         val_color = "#dc3545" if item[key] < 0 else "#28a745"
-                        html_str += f"""
-                        <div style='display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #f1f5f9; padding-bottom:2px;'>
-                            <a href='?stock={item['ticker']}' target='_self' style='text-decoration:none; color:#1e293b; font-weight:700; font-size:0.95rem; cursor:pointer;'>
-                                {j+1}. {item['ticker']}
-                            </a>
-                            <span style='color:{val_color}; font-weight:bold; font-family: monospace; font-size:0.95rem;'>
-                                {item[key]:+.1f}%
-                            </span>
-                        </div>
-                        """
-                    html_str += "</div>"
-                    st.markdown(html_str, unsafe_allow_html=True)
+                        c_rank, c_val = st.columns([3, 1])
+                        with c_rank:
+                            # 核心：排行榜代码点击后，触发 current_page 切换
+                            if st.button(f"{j+1}. {item['ticker']}", key=f"rk_{key}_{item['ticker']}"):
+                                st.session_state.selected_stock = item['ticker']
+                                st.session_state.current_page = "StockPage"
+                                st.rerun()
+                        with c_val:
+                            st.markdown(f"<div style='text-align:right; color:{val_color}; font-weight:bold; font-family: monospace; padding-top:6px;'>{item[key]:+.1f}%</div>", unsafe_allow_html=True)
+                        st.markdown("<hr style='margin:0; border:none; border-bottom:1px solid #f1f5f9;'>", unsafe_allow_html=True)
