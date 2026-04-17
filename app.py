@@ -23,7 +23,7 @@ div.stButton button:hover { color: #3b82f6 !important; }
 """, unsafe_allow_html=True)
 
 # --- 1. 配置管理 ---
-CONFIG_FILE = "strategy_terminal_ultra_pro_v23.json"
+CONFIG_FILE = "strategy_terminal_ultra_pro_v24.json"
 
 def load_config():
     if os.path.exists(CONFIG_FILE):
@@ -79,16 +79,14 @@ def get_return(history_df, days_back):
         if prev != 0: return ((curr - prev) / prev) * 100
     return 0.0
 
-# 核心优化1：将“数据下载”彻底独立并缓存，避免拖动滑块时重复请求API
 @st.cache_data(ttl=600)
 def fetch_raw_data(all_tickers):
     return yf.download(all_tickers, period="2y", interval="1d", group_by='ticker', progress=False)
 
-# 核心优化2：将“数据计算”剥离，利用内存秒级重算
 def compute_all_metrics(sectors, benchmarks, full_data, def_win):
     results, b_res, b_history = [], {}, {}
-
     all_bench = list(set(benchmarks.values()) | {"SOXX", "XAR", "ITA", "URA", "XLI", "QTUM", "SPY"})
+    
     for b in all_bench:
         try:
             h = full_data[b].dropna()
@@ -106,7 +104,7 @@ def compute_all_metrics(sectors, benchmarks, full_data, def_win):
 
         for t in tickers:
             try:
-                h = full_data[t].dropna()
+                h = full_data[t].dropna().copy()
                 if len(h) < 30: continue 
                 
                 price = to_scalar(h['Close'].iloc[-1])
@@ -140,7 +138,6 @@ def compute_all_metrics(sectors, benchmarks, full_data, def_win):
                 is_vol_dry = vol_dry_ratio < 0.8
                 is_uptrend = price > to_scalar(h['MA144'].iloc[-1]) if len(h)>=144 else False
 
-                # 动态计算逆风护盘率（基于滑块传入的 def_win 天数）
                 defense_rate = 0.0
                 if b_h is not None and len(h) >= def_win and len(b_h) >= def_win:
                     s_daily_returns = h['Close'].tail(def_win + 1).pct_change().dropna()
@@ -148,7 +145,6 @@ def compute_all_metrics(sectors, benchmarks, full_data, def_win):
                     common_idx = s_daily_returns.index.intersection(b_daily_returns.index)
                     s_aligned = s_daily_returns.loc[common_idx]
                     b_aligned = b_daily_returns.loc[common_idx]
-                    
                     down_days_mask = b_aligned < 0
                     total_down_days = down_days_mask.sum()
                     if total_down_days > 0:
@@ -166,19 +162,64 @@ def compute_all_metrics(sectors, benchmarks, full_data, def_win):
                     "ma_spread": ma_spread, "vol_ratio": vol_dry_ratio,
                     "is_rs_strong": is_rs_strong, "is_vol_dry": is_vol_dry, "is_uptrend": is_uptrend,
                     "rs_5d": rs_5d, "rs_30d": rs_30d, "rs_144d": rs_144d, "b_sym": b_sym,
-                    "defense_rate": defense_rate
+                    "defense_rate": defense_rate,
+                    "full_hist": h.tail(300), # 截取过去300天供起爆点回测使用
+                    "b_hist": b_h.tail(300) if b_h is not None else None
                 })
             except: pass
     return b_res, results
+
+# --- 新增：起爆点回测引擎核心逻辑 ---
+def find_ignition_points(h, b_h):
+    if b_h is None or len(h) < 144: return []
+    try:
+        # 对齐索引并计算历史指标
+        idx = h.index.intersection(b_h.index)
+        hist = h.loc[idx].copy()
+        b_hist = b_h.loc[idx].copy()
+        
+        hist['RS_30_hist'] = (hist['Close'].pct_change(30) - b_hist['Close'].pct_change(30)) * 100
+        hist['Vol_Ratio_hist'] = hist['Volume'].rolling(5).mean() / hist['Volume'].rolling(30).mean()
+        
+        # 计算历史的均线粘合度
+        ma_cols = ['MA5', 'MA12', 'MA30', 'MA144']
+        hist['MA_Max'] = hist[ma_cols].max(axis=1)
+        hist['MA_Min'] = hist[ma_cols].min(axis=1)
+        hist['Spread_hist'] = (hist['MA_Max'] - hist['MA_Min']) / hist['MA_Min']
+        
+        ignitions = []
+        # 回溯寻找满足“粘合后突发放量且跑赢大盘”的节点
+        for i in range(144, len(hist)):
+            vol_spike = hist['Vol_Ratio_hist'].iloc[i] > 1.5
+            rs_turned = hist['RS_30_hist'].iloc[i] > 0
+            tight_yesterday = hist['Spread_hist'].iloc[i-1] < 0.1
+            up_trend = hist['Close'].iloc[i] > hist['MA144'].iloc[i]
+            
+            if vol_spike and rs_turned and tight_yesterday and up_trend:
+                ignitions.append({
+                    "Date": hist.index[i].strftime('%Y-%m-%d'),
+                    "Price": float(hist['Close'].iloc[i]),
+                    "Vol_Ratio": float(hist['Vol_Ratio_hist'].iloc[i]),
+                    "RS_30": float(hist['RS_30_hist'].iloc[i])
+                })
+        
+        # 过滤相近的日期，只保留第一起爆点
+        filtered = []
+        last_dt = None
+        for ig in ignitions:
+            dt_obj = datetime.strptime(ig['Date'], '%Y-%m-%d')
+            if last_dt is None or (dt_obj - last_dt).days > 20: # 两次起爆至少间隔20天
+                filtered.append(ig)
+                last_dt = dt_obj
+        return filtered[-5:] # 返回最近的5次
+    except: return []
 
 # --- 带有深度诊断的独立研报页 ---
 def render_stock_page(ticker, m_res, def_win):
     st.button("⬅️ 返回战略大盘", on_click=lambda: setattr(st.session_state, 'current_page', 'Dashboard'))
     
     s = next((x for x in m_res if x['ticker'] == ticker), None)
-    if not s:
-        st.error("⚠️ 数据加载失败。")
-        return
+    if not s: st.error("⚠️ 数据加载失败。"); return
 
     st.markdown(f"## 🎯 战术锁定：{s['ticker']}")
     
@@ -224,7 +265,6 @@ def render_stock_page(ticker, m_res, def_win):
             c_rs5 = "#dc3545" if s['rs_5d'] < 0 else "#28a745"
             c_rs30 = "#dc3545" if s['rs_30d'] < 0 else "#28a745"
             c_rs144 = "#dc3545" if s['rs_144d'] < 0 else "#28a745"
-            
             c_def = "#28a745" if s['defense_rate'] >= 60 else ("#854d0e" if s['defense_rate'] >= 40 else "#dc3545")
 
             html_content = f"""
@@ -246,30 +286,48 @@ def render_stock_page(ticker, m_res, def_win):
             st.markdown(html_content, unsafe_allow_html=True)
 
     st.divider()
-    current_note = st.session_state.my_notes.get(ticker, "")
-    col_edit, col_preview = st.columns([1, 1])
+    
+    # === 核心新模块：历史起爆点时光机 ===
+    col_hist, col_edit = st.columns([1, 1])
+    with col_hist:
+        st.markdown("### ⏳ 历史起爆点回测 (时光机)")
+        st.markdown("<small style='color:#64748b;'>* 系统自动扫描过去 300 天内，满足【均线极度粘合 -> 突发放量突破 -> 相对强度猛烈翻正】的关键变盘日。</small>", unsafe_allow_html=True)
+        ignitions = find_ignition_points(s['full_hist'], s['b_hist'])
+        
+        if ignitions:
+            for ig in ignitions:
+                st.markdown(f"""
+                <div style='border-left: 4px solid #f59e0b; background:#fffbeb; padding: 10px; border-radius: 4px; margin-bottom: 8px;'>
+                    <b style='color:#b45309;'>点火日: {ig['Date']}</b> <br>
+                    <span style='font-size:0.9rem; color:#475569;'>突破发车价: <b>${ig['Price']:.2f}</b></span> | 
+                    <span style='font-size:0.9rem; color:#475569;'>资金爆量: <b>{ig['Vol_Ratio']:.1f}倍</b></span> | 
+                    <span style='font-size:0.9rem; color:#28a745;'>RS转强: <b>+{ig['RS_30']:.1f}%</b></span>
+                </div>
+                """, unsafe_allow_html=True)
+            cur_p = s['price']
+            first_p = ignitions[0]['Price']
+            total_g = ((cur_p - first_p)/first_p)*100
+            st.success(f"📈 自最初起爆点 (${first_p:.2f}) 至今，该股已拉升 **{total_g:+.1f}%**。")
+        else:
+            st.info("🕒 过去 300 天内未扫描到完美的『平地起爆』信号。它可能一直处于主升浪，或缺乏资金暴力关注。")
+
     with col_edit:
-        new_note = st.text_area(f"撰写 {ticker} 的博弈逻辑：", value=current_note, height=500)
+        st.markdown("### 📝 博弈逻辑与剧本")
+        current_note = st.session_state.my_notes.get(ticker, "")
+        new_note = st.text_area(f"撰写 {ticker} 的交易剧本：", value=current_note, height=250)
         if st.button("💾 保存解析内容", type="primary", use_container_width=True):
             st.session_state.my_notes[ticker] = new_note
             save_config()
             st.success("✅ 笔记已永久保存！")
-    with col_preview:
-        st.markdown("**🔍 渲染预览**")
-        with st.container(border=True, height=500):
-            if new_note: st.markdown(new_note)
-            else: st.info("暂无解析内容。")
 
 # --- 3. 界面布局 ---
 with st.sidebar:
     st.header("⚙️ 终端管理")
     if st.button("🚀 刷新全量网络数据", type="primary", use_container_width=True): st.cache_data.clear(); st.rerun()
-    
     st.divider()
     st.subheader("🛡️ 雷达参数设定")
     def_win = st.slider("逆风护盘统计周期 (天)", min_value=10, max_value=60, value=30, step=5)
-    st.markdown("<small style='color:#64748b;'>* 滑动调整测算周期，排行榜将瞬间重算。</small>", unsafe_allow_html=True)
-
+    
     with st.expander("📁 板块编辑"):
         target_s = st.selectbox("当前板块", list(st.session_state.my_sectors.keys()))
         nt = st.text_input("添加代码")
@@ -282,14 +340,7 @@ with st.sidebar:
             if ns: st.session_state.my_sectors[ns] = []; st.session_state.my_benchmarks[ns] = nb.upper(); save_config(); st.rerun()
         if st.button("🗑️ 删除该板块"):
             del st.session_state.my_sectors[target_s]; save_config(); st.rerun()
-            
-    st.divider()
-    all_ts = sorted(list(set([t for ts in st.session_state.my_sectors.values() for t in ts])))
-    edit_t = st.selectbox("快速逻辑编辑", all_ts)
-    st.session_state.my_notes[edit_t] = st.text_area("简易记录", value=st.session_state.my_notes.get(edit_t, ""), height=150)
-    if st.button("💾 保存侧栏笔记", use_container_width=True): save_config()
 
-# ---- 分离式数据流：先下载原始数据，再带入内存极速计算 ----
 all_tickers_flat = list(set([t for ts in st.session_state.my_sectors.values() for t in ts]))
 all_bench_flat = list(set(st.session_state.my_benchmarks.values()) | {"SOXX", "XAR", "ITA", "URA", "XLI", "QTUM", "SPY"})
 full_raw_data = fetch_raw_data(list(set(all_tickers_flat + all_bench_flat)))
@@ -298,7 +349,7 @@ b_res, m_res = compute_all_metrics(st.session_state.my_sectors, st.session_state
 if st.session_state.current_page == "StockPage":
     render_stock_page(st.session_state.selected_stock, m_res, def_win)
 else:
-    st.title("🏛️ 2026 战略资产终端 (全景护城河版)")
+    st.title("🏛️ 2026 战略资产终端 (时光机引擎版)")
     r_cols = st.columns(len(b_res))
     for i, (sym, val) in enumerate(b_res.items()):
         with r_cols[i]: st.metric(sym, f"{val['chg']:+.2f}%")
@@ -338,17 +389,14 @@ else:
                                         """, unsafe_allow_html=True)
                             
                             st.markdown(f"<div style='background:#f1f5f9; padding:10px; border-radius:8px; margin-top:15px; font-size:1rem; border-left:4px solid #3b82f6;'><b>5日累积: {s['t_5d']:+.2f}%</b> | 144日: <b>{s['t_144d']:+.1f}%</b> | 288日: <b>{s['t_288d']:+.1f}%</b></div>", unsafe_allow_html=True)
-                            with st.expander("🔍 深度解析"): st.write(st.session_state.my_notes.get(s['ticker'], "暂无解析..."))
-                        
                         with c3:
                             if st.button("🗑️", key=f"del_{s['ticker']}"):
                                 st.session_state.my_sectors[s_name].remove(s['ticker']); save_config(); st.rerun()
 
     with r_col:
         st.subheader("🏆 战力排行榜")
-        # 核心更新：新增了 🛡️护盘 排行榜
-        rank_tabs = st.tabs(["日内", "5日", "144d", "288d", "🛡️ 护盘", "🎯 潜伏"])
-        rank_keys = [('change', '今日'), ('t_5d', '5日'), ('t_144d', '144d'), ('t_288d', '288d')]
+        rank_tabs = st.tabs(["日内", "5日", "144d", "🛡️ 护盘", "🎯 潜伏"])
+        rank_keys = [('change', '今日'), ('t_5d', '5日'), ('t_144d', '144d')]
         
         with st.container(height=900): 
             for i, (key, label) in enumerate(rank_keys):
@@ -366,9 +414,7 @@ else:
                             st.markdown(f"<div style='text-align:right; color:{val_color}; font-weight:bold; font-family: monospace; padding-top:6px;'>{item[key]:+.1f}%</div>", unsafe_allow_html=True)
                         st.markdown("<hr style='margin:0; border:none; border-bottom:1px solid #f1f5f9;'>", unsafe_allow_html=True)
             
-            # --- 全新独立榜单：全市场逆风护盘胜率排行榜 ---
-            with rank_tabs[4]:
-                st.markdown(f"<small style='color:#64748b;'>* 过去 {def_win} 个交易日，大盘下跌时的跑赢胜率</small>", unsafe_allow_html=True)
+            with rank_tabs[3]:
                 sorted_def = sorted(m_res, key=lambda x: x['defense_rate'], reverse=True)
                 for j, item in enumerate(sorted_def):
                     c_def = "#28a745" if item['defense_rate'] >= 60 else ("#854d0e" if item['defense_rate'] >= 40 else "#dc3545")
@@ -382,9 +428,7 @@ else:
                         st.markdown(f"<div style='text-align:right; color:{c_def}; font-weight:bold; font-family: monospace; padding-top:6px;'>{item['defense_rate']:.0f}%</div>", unsafe_allow_html=True)
                     st.markdown("<hr style='margin:0; border:none; border-bottom:1px solid #f1f5f9;'>", unsafe_allow_html=True)
 
-            with rank_tabs[5]:
-                st.markdown("<small style='color:#64748b;'>* 扫描多均线粘合标的，评级包含【逆风护盘率】</small>", unsafe_allow_html=True)
-                
+            with rank_tabs[4]:
                 sniper_list = []
                 for x in m_res:
                     if x['ma_spread'] < 0.05: 
@@ -397,11 +441,9 @@ else:
                         if score >= 2:
                             x['sniper_score'] = score
                             sniper_list.append(x)
-                
                 sniper_list = sorted(sniper_list, key=lambda x: (x['sniper_score'], x['defense_rate']), reverse=True)
                 
-                if not sniper_list:
-                    st.info("目前没有满足严苛吸筹条件的标的。保持耐心。")
+                if not sniper_list: st.info("目前无满足条件的标的。")
                 else:
                     for j, item in enumerate(sniper_list):
                         c_rank, c_val = st.columns([2.5, 1.5])
@@ -411,6 +453,5 @@ else:
                                 st.session_state.current_page = "StockPage"
                                 st.rerun()
                         with c_val:
-                            stars = "⭐" * item['sniper_score']
-                            st.markdown(f"<div style='text-align:right; color:#854d0e; font-size:0.8rem; padding-top:6px;'>{stars}</div>", unsafe_allow_html=True)
+                            st.markdown(f"<div style='text-align:right; color:#854d0e; font-size:0.8rem; padding-top:6px;'>{'⭐'*item['sniper_score']}</div>", unsafe_allow_html=True)
                         st.markdown("<hr style='margin:0; border:none; border-bottom:1px solid #f1f5f9;'>", unsafe_allow_html=True)
