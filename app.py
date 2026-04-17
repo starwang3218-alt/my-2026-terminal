@@ -6,8 +6,8 @@ import pandas as pd
 from datetime import datetime
 from streamlit_autorefresh import st_autorefresh
 
-# --- 0. UI 配置 ---
-st.set_page_config(page_title="2026 战略终端 (V25 Dual Ignition)", layout="wide")
+# --- 0. 全局 UI 压缩渲染 ---
+st.set_page_config(page_title="2026 战略终端 (Pro UI)", layout="wide")
 st.markdown("""
 <style>
 div[data-testid="column"] { margin-bottom: -15px !important; }
@@ -16,12 +16,14 @@ div.stButton button {
     padding-top: 2px !important; padding-bottom: 2px !important;
     background-color: transparent !important; border: none !important;
     color: #1e293b !important; font-weight: 700 !important;
+    justify-content: flex-start !important;
 }
+div.stButton button:hover { color: #3b82f6 !important; }
 </style>
 """, unsafe_allow_html=True)
 
 # --- 1. 配置管理 ---
-CONFIG_FILE = "strategy_terminal_ultra_pro_v25.json"
+CONFIG_FILE = "strategy_terminal_ultra_pro_v24.json"
 
 def load_config():
     if os.path.exists(CONFIG_FILE):
@@ -57,7 +59,7 @@ def save_config():
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(cfg, f, ensure_ascii=False, indent=4)
 
-# --- 2. 核心逻辑 ---
+# --- 2. 系统核心初始化 ---
 st_autorefresh(interval=300000, key="global_refresh")
 
 if 'my_sectors' not in st.session_state:
@@ -81,63 +83,10 @@ def get_return(history_df, days_back):
 def fetch_raw_data(all_tickers):
     return yf.download(all_tickers, period="2y", interval="1d", group_by='ticker', progress=False)
 
-# === 核心算法：双重引爆点提取 ===
-def find_dual_ignitions(h, b_h):
-    if b_h is None or len(h) < 60: return []
-    try:
-        idx = h.index.intersection(b_h.index)
-        hist = h.loc[idx].copy()
-        b_hist = b_h.loc[idx].copy()
-        
-        hist['MA5'] = hist['Close'].rolling(5).mean()
-        hist['MA12'] = hist['Close'].rolling(12).mean()
-        hist['MA30'] = hist['Close'].rolling(30).mean()
-        hist['MA144'] = hist['Close'].rolling(144).mean()
-        
-        hist['RS_30_hist'] = (hist['Close'].pct_change(30) - b_hist['Close'].pct_change(30)) * 100
-        hist['Vol_Ratio_hist'] = hist['Volume'].rolling(5).mean() / hist['Volume'].rolling(30).mean()
-        
-        ma_cols = ['MA5', 'MA12', 'MA30', 'MA144']
-        hist['MA_Max'] = hist[ma_cols].max(axis=1)
-        hist['MA_Min'] = hist[ma_cols].min(axis=1)
-        hist['Spread_hist'] = (hist['MA_Max'] - hist['MA_Min']) / hist['MA_Min']
-        
-        ignitions = []
-        for i in range(30, len(hist)):
-            price_i = hist['Close'].iloc[i]
-            vol_i = hist['Vol_Ratio_hist'].iloc[i]
-            rs_i = hist['RS_30_hist'].iloc[i]
-            
-            # --- 模式 A：初次引爆 (平地起惊雷) ---
-            if hist['Spread_hist'].iloc[i-1] < 0.12 and vol_i > 1.6 and rs_i > 0 and price_i > hist['MA144'].iloc[i]:
-                ignitions.append({"Date": hist.index[i].strftime('%Y-%m-%d'), "Type": "First", "Price": float(price_i), "Vol": vol_i, "RS": rs_i})
-                continue
-            
-            # --- 模式 B：二次引爆 (空中加油再起航) ---
-            # 条件：处于主升浪中，前10天缩量横盘(窄幅)，今天放量突破
-            if price_i > hist['MA144'].iloc[i] * 1.1:
-                local_range = hist['Close'].iloc[i-15:i]
-                if not local_range.empty:
-                    consolidation = (local_range.max() - local_range.min()) / local_range.min() < 0.12
-                    vol_was_dry = hist['Vol_Ratio_hist'].iloc[i-1] < 1.1
-                    breakout = price_i > local_range.max()
-                    if breakout and vol_i > 1.4 and consolidation and vol_was_dry:
-                        ignitions.append({"Date": hist.index[i].strftime('%Y-%m-%d'), "Type": "Secondary", "Price": float(price_i), "Vol": vol_i, "RS": rs_i})
-
-        # 过滤重复信号
-        res = []
-        last_dt = None
-        for ig in ignitions:
-            dt_obj = datetime.strptime(ig['Date'], '%Y-%m-%d')
-            if last_dt is None or (dt_obj - last_dt).days > 15:
-                res.append(ig)
-                last_dt = dt_obj
-        return res[-5:] 
-    except: return []
-
 def compute_all_metrics(sectors, benchmarks, full_data, def_win):
     results, b_res, b_history = [], {}, {}
     all_bench = list(set(benchmarks.values()) | {"SOXX", "XAR", "ITA", "URA", "XLI", "QTUM", "SPY"})
+    
     for b in all_bench:
         try:
             h = full_data[b].dropna()
@@ -148,10 +97,10 @@ def compute_all_metrics(sectors, benchmarks, full_data, def_win):
     for sec_name, tickers in sectors.items():
         b_sym = benchmarks.get(sec_name, "SPY")
         b_h = b_history.get(b_sym)
-        b_ret_1 = get_return(b_h, 1)
-        b_ret_5 = get_return(b_h, 5)
-        b_ret_30 = get_return(b_h, 30)
-        b_ret_144 = get_return(b_h, 144)
+        b_ret_1 = get_return(b_h, 1) if b_h is not None else 0
+        b_ret_5 = get_return(b_h, 5) if b_h is not None else 0
+        b_ret_30 = get_return(b_h, 30) if b_h is not None else 0
+        b_ret_144 = get_return(b_h, 144) if b_h is not None else 0
 
         for t in tickers:
             try:
@@ -164,9 +113,11 @@ def compute_all_metrics(sectors, benchmarks, full_data, def_win):
                 s_ret_30 = get_return(h, 30)
                 s_ret_144 = get_return(h, 144)
                 
-                h['MA5'] = h['Close'].rolling(5).mean(); h['MA12'] = h['Close'].rolling(12).mean()
-                h['MA30'] = h['Close'].rolling(30).mean(); h['MA144'] = h['Close'].rolling(144).mean()
-                h['MA288'] = h['Close'].rolling(288).mean()
+                h['MA5'] = h['Close'].rolling(window=5).mean()
+                h['MA12'] = h['Close'].rolling(window=12).mean()
+                h['MA30'] = h['Close'].rolling(window=30).mean()
+                h['MA144'] = h['Close'].rolling(window=144).mean()
+                h['MA288'] = h['Close'].rolling(window=288).mean()
                 
                 v_ma5 = to_scalar(h['Volume'].rolling(5).mean().iloc[-1])
                 v_ma30 = to_scalar(h['Volume'].rolling(30).mean().iloc[-1])
@@ -175,82 +126,220 @@ def compute_all_metrics(sectors, benchmarks, full_data, def_win):
                 ma_spread = 999
                 if len(h) >= 144:
                     ma_vals = [to_scalar(h['MA5'].iloc[-1]), to_scalar(h['MA12'].iloc[-1]), to_scalar(h['MA30'].iloc[-1]), to_scalar(h['MA144'].iloc[-1])]
-                    ma_spread = (max(ma_vals) - min(ma_vals)) / min(ma_vals)
+                    if all(v > 0 for v in ma_vals):
+                        ma_spread = (max(ma_vals) - min(ma_vals)) / min(ma_vals)
 
-                rs_1d = s_ret_1 - b_ret_1; rs_5d = s_ret_5 - b_ret_5
-                rs_30d = s_ret_30 - b_ret_30; rs_144d = s_ret_144 - b_ret_144
+                rs_1d = s_ret_1 - b_ret_1
+                rs_5d = s_ret_5 - b_ret_5
+                rs_30d = s_ret_30 - b_ret_30
+                rs_144d = s_ret_144 - b_ret_144
                 
-                # 护城河计算
+                is_rs_strong = (rs_5d > 0) and (rs_30d > 0)
+                is_vol_dry = vol_dry_ratio < 0.8
+                is_uptrend = price > to_scalar(h['MA144'].iloc[-1]) if len(h)>=144 else False
+
                 defense_rate = 0.0
-                if b_h is not None and len(h) >= def_win:
-                    s_daily = h['Close'].tail(def_win+1).pct_change().dropna()
-                    b_daily = b_h['Close'].pct_change().dropna()
-                    common = s_daily.index.intersection(b_daily.index)
-                    s_a, b_a = s_daily.loc[common], b_daily.loc[common]
-                    down_days = b_a < 0
-                    if down_days.sum() > 0:
-                        defense_rate = (s_a[down_days] > b_a[down_days]).sum() / down_days.sum() * 100
+                if b_h is not None and len(h) >= def_win and len(b_h) >= def_win:
+                    s_daily_returns = h['Close'].tail(def_win + 1).pct_change().dropna()
+                    b_daily_returns = b_h['Close'].tail(def_win + 1).pct_change().dropna()
+                    common_idx = s_daily_returns.index.intersection(b_daily_returns.index)
+                    s_aligned = s_daily_returns.loc[common_idx]
+                    b_aligned = b_daily_returns.loc[common_idx]
+                    down_days_mask = b_aligned < 0
+                    total_down_days = down_days_mask.sum()
+                    if total_down_days > 0:
+                        outperform_down_days = (s_aligned[down_days_mask] > b_aligned[down_days_mask]).sum()
+                        defense_rate = (outperform_down_days / total_down_days) * 100
 
                 results.append({
                     "ticker": t, "sector": sec_name, "price": price, "change": s_ret_1, "rs": rs_1d,
-                    "t_5d": s_ret_5, "t_144d": s_ret_144, "ma_spread": ma_spread, "vol_ratio": vol_dry_ratio,
+                    "t_5d": s_ret_5, "t_144d": s_ret_144, 
+                    "t_288d": ((price - to_scalar(h['Close'].iloc[-289]))/to_scalar(h['Close'].iloc[-289]))*100 if len(h)>=289 else 0,
+                    "history": h.tail(6),
                     "ma5": to_scalar(h['MA5'].iloc[-1]), "ma12": to_scalar(h['MA12'].iloc[-1]),
-                    "ma30": to_scalar(h['MA30'].iloc[-1]), "ma144": to_scalar(h['MA144'].iloc[-1]),
+                    "ma30": to_scalar(h['MA30'].iloc[-1]), "ma144": to_scalar(h['MA144'].iloc[-1]) if len(h)>=144 else 0,
                     "ma288": to_scalar(h['MA288'].iloc[-1]) if len(h)>=288 else 0,
+                    "ma_spread": ma_spread, "vol_ratio": vol_dry_ratio,
+                    "is_rs_strong": is_rs_strong, "is_vol_dry": is_vol_dry, "is_uptrend": is_uptrend,
                     "rs_5d": rs_5d, "rs_30d": rs_30d, "rs_144d": rs_144d, "b_sym": b_sym,
-                    "defense_rate": defense_rate, "full_hist": h.tail(400), "b_hist": b_h.tail(400) if b_h is not None else None
+                    "defense_rate": defense_rate,
+                    "full_hist": h.tail(300), # 截取过去300天供起爆点回测使用
+                    "b_hist": b_h.tail(300) if b_h is not None else None
                 })
             except: pass
     return b_res, results
 
-# --- 独立研报页 ---
+# --- 新增：起爆点回测引擎核心逻辑 ---
+def find_ignition_points(h, b_h):
+    if b_h is None or len(h) < 144: return []
+    try:
+        # 对齐索引并计算历史指标
+        idx = h.index.intersection(b_h.index)
+        hist = h.loc[idx].copy()
+        b_hist = b_h.loc[idx].copy()
+        
+        hist['RS_30_hist'] = (hist['Close'].pct_change(30) - b_hist['Close'].pct_change(30)) * 100
+        hist['Vol_Ratio_hist'] = hist['Volume'].rolling(5).mean() / hist['Volume'].rolling(30).mean()
+        
+        # 计算历史的均线粘合度
+        ma_cols = ['MA5', 'MA12', 'MA30', 'MA144']
+        hist['MA_Max'] = hist[ma_cols].max(axis=1)
+        hist['MA_Min'] = hist[ma_cols].min(axis=1)
+        hist['Spread_hist'] = (hist['MA_Max'] - hist['MA_Min']) / hist['MA_Min']
+        
+        ignitions = []
+        # 回溯寻找满足“粘合后突发放量且跑赢大盘”的节点
+        for i in range(144, len(hist)):
+            vol_spike = hist['Vol_Ratio_hist'].iloc[i] > 1.5
+            rs_turned = hist['RS_30_hist'].iloc[i] > 0
+            tight_yesterday = hist['Spread_hist'].iloc[i-1] < 0.1
+            up_trend = hist['Close'].iloc[i] > hist['MA144'].iloc[i]
+            
+            if vol_spike and rs_turned and tight_yesterday and up_trend:
+                ignitions.append({
+                    "Date": hist.index[i].strftime('%Y-%m-%d'),
+                    "Price": float(hist['Close'].iloc[i]),
+                    "Vol_Ratio": float(hist['Vol_Ratio_hist'].iloc[i]),
+                    "RS_30": float(hist['RS_30_hist'].iloc[i])
+                })
+        
+        # 过滤相近的日期，只保留第一起爆点
+        filtered = []
+        last_dt = None
+        for ig in ignitions:
+            dt_obj = datetime.strptime(ig['Date'], '%Y-%m-%d')
+            if last_dt is None or (dt_obj - last_dt).days > 20: # 两次起爆至少间隔20天
+                filtered.append(ig)
+                last_dt = dt_obj
+        return filtered[-5:] # 返回最近的5次
+    except: return []
+
+# --- 带有深度诊断的独立研报页 ---
 def render_stock_page(ticker, m_res, def_win):
     st.button("⬅️ 返回战略大盘", on_click=lambda: setattr(st.session_state, 'current_page', 'Dashboard'))
-    s = next((x for x in m_res if x['ticker'] == ticker), None)
-    if not s: return
     
+    s = next((x for x in m_res if x['ticker'] == ticker), None)
+    if not s: st.error("⚠️ 数据加载失败。"); return
+
     st.markdown(f"## 🎯 战术锁定：{s['ticker']}")
     
-    # 概览面板 (略, 同 V24)
-    c1, c2 = st.columns([1, 4])
-    with c1:
-        st.metric(s['ticker'], f"${s['price']:.2f}", f"{s['change']:+.2f}%")
-        st.link_button("📈 K线", f"https://www.tradingview.com/chart/?symbol={s['ticker']}")
-    with c2:
-        ma288 = s['ma288']
-        dev_288 = (s['price'] - ma288) / ma288 * 100 if ma288 > 0 else 0
-        c_rs30 = "#28a745" if s['rs_30d']>0 else "#dc3545"
-        st.markdown(f"""
-        <div style='background:#f8fafc; border:1px solid #e2e8f0; padding:15px; border-radius:10px;'>
-            <b>偏离288日线: {dev_288:+.1f}%</b> | 30日RS: <b style='color:{c_rs30};'>{s['rs_30d']:+.1f}%</b> | 护盘率: <b>{s['defense_rate']:.0f}%</b><br>
-            <small>MA5: ${s['ma5']:.2f} | MA30: ${s['ma30']:.2f} | MA144: ${s['ma144']:.2f}</small>
-        </div>
-        """, unsafe_allow_html=True)
+    with st.container(border=True):
+        c1, c2 = st.columns([1.5, 4.5])
+        with c1:
+            st.markdown(f"### {s['ticker']}")
+            st.markdown(f"<h2 style='margin:0;'>${s['price']:.2f}</h2>", unsafe_allow_html=True)
+            st.markdown(f"<b style='color:{'#28a745' if s['change']>=0 else '#dc3545'}; font-size:1.4rem;'>{s['change']:+.2f}%</b>", unsafe_allow_html=True)
+            st.link_button("📈 K线直达", f"https://www.tradingview.com/chart/?symbol={s['ticker']}")
+        
+        with c2:
+            h_cols = st.columns(5)
+            hist_len = len(s['history'])
+            for idx in range(1, 6):
+                with h_cols[idx-1]:
+                    if idx < hist_len:
+                        cur, pre = to_scalar(s['history']['Close'].iloc[idx]), to_scalar(s['history']['Close'].iloc[idx-1])
+                        d_chg = ((cur - pre) / pre) * 100 if pre != 0 else 0
+                        color = "#28a745" if d_chg >= 0 else "#dc3545"
+                        dt_str = s['history'].index[idx].strftime('%m-%d')
+                        st.markdown(f"""
+                            <div style='text-align:center; border: 1.5px solid #e2e8f0; padding: 10px; border-radius: 10px; background-color: #f8fafc; margin: 2px;'>
+                                <small style='color:#64748b;'>{dt_str}</small><br>
+                                <b style='color:{color}; font-size: 1.4rem;'>{d_chg:+.1f}%</b><br>
+                                <small style='font-weight:bold; font-size: 1.1rem;'>${cur:.1f}</small>
+                            </div>
+                        """, unsafe_allow_html=True)
+            
+            st.markdown(f"<div style='background:#f1f5f9; padding:10px; border-radius:8px; margin-top:15px; font-size:1rem; border-left:4px solid #3b82f6;'><b>5日累积: {s['t_5d']:+.2f}%</b> | 144日: <b>{s['t_144d']:+.1f}%</b> | 288日战力: <b>{s['t_288d']:+.1f}%</b></div>", unsafe_allow_html=True)
+
+            ma5, ma12, ma30, ma144, ma288, price = s['ma5'], s['ma12'], s['ma30'], s['ma144'], s['ma288'], s['price']
+            
+            tags = []
+            if s['ma_spread'] < 0.05: tags.append("<span style='background:#fef08a; color:#854d0e; padding:3px 6px; border-radius:4px;'>🎯 均线粘合</span>")
+            if s['is_rs_strong']: tags.append("<span style='background:#dcfce7; color:#166534; padding:3px 6px; border-radius:4px;'>🛡️ RS硬核托底</span>")
+            if s['is_vol_dry']: tags.append("<span style='background:#e0e7ff; color:#3730a3; padding:3px 6px; border-radius:4px;'>🤫 成交量萎缩</span>")
+            if s['is_uptrend']: tags.append("<span style='background:#dbeafe; color:#1e40af; padding:3px 6px; border-radius:4px;'>⛰️ 长线之上</span>")
+            
+            tags_html = " ".join(tags) if tags else "<span style='color:#64748b;'>未检测到明显特征</span>"
+            dev_288 = ((price - ma288) / ma288 * 100) if ma288 > 0 else 0
+
+            c_rs5 = "#dc3545" if s['rs_5d'] < 0 else "#28a745"
+            c_rs30 = "#dc3545" if s['rs_30d'] < 0 else "#28a745"
+            c_rs144 = "#dc3545" if s['rs_144d'] < 0 else "#28a745"
+            c_def = "#28a745" if s['defense_rate'] >= 60 else ("#854d0e" if s['defense_rate'] >= 40 else "#dc3545")
+
+            html_content = f"""
+<div style='background:#ffffff; border:1.5px solid #e2e8f0; padding:12px; border-radius:8px; margin-top:10px;'>
+<div style='margin-bottom:8px; font-size:0.95rem;'><b>主力行为：</b> {tags_html}</div>
+<div style='margin-bottom:8px; font-size:0.9rem; color:#475569;'>偏离 288日均线: <b style='color:{"#dc3545" if dev_288 < 0 else "#28a745"};'>{dev_288:+.2f}%</b> (量缩比: {s['vol_ratio']:.2f})</div>
+<div style='display:flex; justify-content:space-between; align-items:center; background:#f8fafc; padding:8px; border-radius:6px; margin-bottom:8px;'>
+<span style='font-size:0.85rem; color:#64748b; font-weight:bold;'>基准: {s['b_sym']}</span>
+<span style='font-size:0.9rem;'>逆风护盘率 ({def_win}日): <b style='color:{c_def}; background:#f1f5f9; padding:2px 4px; border-radius:4px;'>{s['defense_rate']:.0f}%</b></span>
+<span style='font-size:0.9rem;'>RS 5日: <b style='color:{c_rs5};'>{s['rs_5d']:+.1f}%</b></span>
+<span style='font-size:0.9rem;'>RS 30日: <b style='color:{c_rs30};'>{s['rs_30d']:+.1f}%</b></span>
+<span style='font-size:0.9rem;'>RS 144日: <b style='color:{c_rs144};'>{s['rs_144d']:+.1f}%</b></span>
+</div>
+<div style='display:flex; justify-content:space-between; font-size:0.9rem; color:#475569; font-family:monospace;'>
+<span>MA5: <b>${ma5:.2f}</b></span> | <span>MA12: <b>${ma12:.2f}</b></span> | <span>MA30: <b>${ma30:.2f}</b></span> | <span>MA144: <b>${ma144:.2f}</b></span> | <span>MA288: <b>${ma288:.2f}</b></span>
+</div>
+</div>
+"""
+            st.markdown(html_content, unsafe_allow_html=True)
 
     st.divider()
     
-    # === 核心新模块：双重起爆时光机 ===
-    st.markdown("### ⏳ 双重起爆时光机 (回测)")
-    ignitions = find_dual_ignitions(s['full_hist'], s['b_hist'])
-    if ignitions:
-        for ig in ignitions:
-            color = "#f59e0b" if ig['Type'] == "First" else "#3b82f6"
-            label = "🚀 初次引爆 (Stage 1->2)" if ig['Type'] == "First" else "🔥 二次加速 (Base Breakout)"
-            st.markdown(f"""
-            <div style='border-left: 5px solid {color}; background:#ffffff; padding: 12px; border-radius: 6px; margin-bottom: 10px; box-shadow: 2px 2px 5px rgba(0,0,0,0.05);'>
-                <b style='color:{color}; font-size:1.1rem;'>{label}</b> | <b>{ig['Date']}</b> <br>
-                价格: <b>${ig['Price']:.2f}</b> | 资金放量: <b>{ig['Vol']:.1f}倍</b> | 相对强度: <b style='color:#28a745;'>+{ig['RS']:.1f}%</b>
-            </div>
-            """, unsafe_allow_html=True)
-    else:
-        st.info("未发现明显引爆信号。")
+    # === 核心新模块：历史起爆点时光机 ===
+    col_hist, col_edit = st.columns([1, 1])
+    with col_hist:
+        st.markdown("### ⏳ 历史起爆点回测 (时光机)")
+        st.markdown("<small style='color:#64748b;'>* 系统自动扫描过去 300 天内，满足【均线极度粘合 -> 突发放量突破 -> 相对强度猛烈翻正】的关键变盘日。</small>", unsafe_allow_html=True)
+        ignitions = find_ignition_points(s['full_hist'], s['b_hist'])
+        
+        if ignitions:
+            for ig in ignitions:
+                st.markdown(f"""
+                <div style='border-left: 4px solid #f59e0b; background:#fffbeb; padding: 10px; border-radius: 4px; margin-bottom: 8px;'>
+                    <b style='color:#b45309;'>点火日: {ig['Date']}</b> <br>
+                    <span style='font-size:0.9rem; color:#475569;'>突破发车价: <b>${ig['Price']:.2f}</b></span> | 
+                    <span style='font-size:0.9rem; color:#475569;'>资金爆量: <b>{ig['Vol_Ratio']:.1f}倍</b></span> | 
+                    <span style='font-size:0.9rem; color:#28a745;'>RS转强: <b>+{ig['RS_30']:.1f}%</b></span>
+                </div>
+                """, unsafe_allow_html=True)
+            cur_p = s['price']
+            first_p = ignitions[0]['Price']
+            total_g = ((cur_p - first_p)/first_p)*100
+            st.success(f"📈 自最初起爆点 (${first_p:.2f}) 至今，该股已拉升 **{total_g:+.1f}%**。")
+        else:
+            st.info("🕒 过去 300 天内未扫描到完美的『平地起爆』信号。它可能一直处于主升浪，或缺乏资金暴力关注。")
 
-# --- 3. 界面逻辑 ---
+    with col_edit:
+        st.markdown("### 📝 博弈逻辑与剧本")
+        current_note = st.session_state.my_notes.get(ticker, "")
+        new_note = st.text_area(f"撰写 {ticker} 的交易剧本：", value=current_note, height=250)
+        if st.button("💾 保存解析内容", type="primary", use_container_width=True):
+            st.session_state.my_notes[ticker] = new_note
+            save_config()
+            st.success("✅ 笔记已永久保存！")
+
+# --- 3. 界面布局 ---
 with st.sidebar:
     st.header("⚙️ 终端管理")
-    if st.button("🚀 刷新全量数据", use_container_width=True): st.cache_data.clear(); st.rerun()
+    if st.button("🚀 刷新全量网络数据", type="primary", use_container_width=True): st.cache_data.clear(); st.rerun()
     st.divider()
-    def_win = st.slider("护盘统计周期", 10, 60, 30, 5)
+    st.subheader("🛡️ 雷达参数设定")
+    def_win = st.slider("逆风护盘统计周期 (天)", min_value=10, max_value=60, value=30, step=5)
+    
+    with st.expander("📁 板块编辑"):
+        target_s = st.selectbox("当前板块", list(st.session_state.my_sectors.keys()))
+        nt = st.text_input("添加代码")
+        if st.button("➕ 添加"):
+            if nt: st.session_state.my_sectors[target_s].append(nt.upper()); save_config(); st.rerun()
+        st.divider()
+        ns = st.text_input("新板块名")
+        nb = st.text_input("对标 ETF")
+        if st.button("📂 创建"):
+            if ns: st.session_state.my_sectors[ns] = []; st.session_state.my_benchmarks[ns] = nb.upper(); save_config(); st.rerun()
+        if st.button("🗑️ 删除该板块"):
+            del st.session_state.my_sectors[target_s]; save_config(); st.rerun()
 
 all_tickers_flat = list(set([t for ts in st.session_state.my_sectors.values() for t in ts]))
 all_bench_flat = list(set(st.session_state.my_benchmarks.values()) | {"SOXX", "XAR", "ITA", "URA", "XLI", "QTUM", "SPY"})
@@ -260,34 +349,109 @@ b_res, m_res = compute_all_metrics(st.session_state.my_sectors, st.session_state
 if st.session_state.current_page == "StockPage":
     render_stock_page(st.session_state.selected_stock, m_res, def_win)
 else:
-    # 主面板渲染 (同 V24, 加入新排行榜等)
-    st.title("🏛️ 2026 战略资产终端 (V25 双重引爆版)")
-    # ... (省略重复的 UI 渲染代码, 保持核心逻辑完整)
-    # 此处逻辑与 V24 保持一致，重点在于 StockPage 里的 find_dual_ignitions 调用
-    
-    # 快速跳转排行榜
-    l_col, r_col = st.columns([3, 1])
-    with r_col:
-        st.subheader("🏆 战力排行")
-        tab1, tab2 = st.tabs(["🛡️ 护盘", "🎯 潜伏"])
-        with tab1:
-            for i, x in enumerate(sorted(m_res, key=lambda k: k['defense_rate'], reverse=True)[:15]):
-                if st.button(f"{i+1}. {x['ticker']} ({x['defense_rate']:.0f}%)", key=f"rk_d_{x['ticker']}"):
-                    st.session_state.selected_stock = x['ticker']; st.session_state.current_page = "StockPage"; st.rerun()
-        with tab2:
-            sniper = [x for x in m_res if x['ma_spread'] < 0.12]
-            for i, x in enumerate(sorted(sniper, key=lambda k: k['defense_rate'], reverse=True)[:15]):
-                if st.button(f"🎯 {x['ticker']}", key=f"rk_s_{x['ticker']}"):
-                    st.session_state.selected_stock = x['ticker']; st.session_state.current_page = "StockPage"; st.rerun()
+    st.title("🏛️ 2026 战略资产终端 (时光机引擎版)")
+    r_cols = st.columns(len(b_res))
+    for i, (sym, val) in enumerate(b_res.items()):
+        with r_cols[i]: st.metric(sym, f"{val['chg']:+.2f}%")
+
+    st.divider()
+    l_col, r_col = st.columns([3.5, 1.5])
 
     with l_col:
         tabs = st.tabs(list(st.session_state.my_sectors.keys()))
         for i, s_name in enumerate(st.session_state.my_sectors.keys()):
             with tabs[i]:
-                for s in [x for x in m_res if x['sector'] == s_name]:
+                sector_stocks = [x for x in m_res if x['sector'] == s_name]
+                for s in sector_stocks:
                     with st.container(border=True):
-                        c1, c2 = st.columns([1, 4])
-                        with c1: st.metric(s['ticker'], f"${s['price']:.2f}")
-                        with c2: 
-                            if st.button(f"查看 {s['ticker']} 深度研报 & 起爆回测", key=f"btn_{s['ticker']}"):
-                                st.session_state.selected_stock = s['ticker']; st.session_state.current_page = "StockPage"; st.rerun()
+                        c1, c2, c3 = st.columns([1.5, 4.5, 0.5])
+                        with c1:
+                            st.markdown(f"### {s['ticker']}")
+                            st.markdown(f"<h2 style='margin:0;'>${s['price']:.2f}</h2>", unsafe_allow_html=True)
+                            st.markdown(f"<b style='color:{'#28a745' if s['change']>=0 else '#dc3545'}; font-size:1.4rem;'>{s['change']:+.2f}%</b>", unsafe_allow_html=True)
+                            st.link_button("📈 K线", f"https://www.tradingview.com/chart/?symbol={s['ticker']}")
+                        
+                        with c2:
+                            h_cols = st.columns(5)
+                            hist_len = len(s['history'])
+                            for idx in range(1, 6):
+                                with h_cols[idx-1]:
+                                    if idx < hist_len:
+                                        cur, pre = to_scalar(s['history']['Close'].iloc[idx]), to_scalar(s['history']['Close'].iloc[idx-1])
+                                        d_chg = ((cur - pre) / pre) * 100 if pre != 0 else 0
+                                        color = "#28a745" if d_chg >= 0 else "#dc3545"
+                                        st.markdown(f"""
+                                            <div style='text-align:center; border: 1.5px solid #e2e8f0; padding: 10px; border-radius: 10px; background-color: #f8fafc; margin: 2px;'>
+                                                <small style='color:#64748b;'>{s['history'].index[idx].strftime('%m-%d')}</small><br>
+                                                <b style='color:{color}; font-size: 1.4rem;'>{d_chg:+.1f}%</b><br>
+                                                <small style='font-weight:bold; font-size: 1.1rem;'>${cur:.1f}</small>
+                                            </div>
+                                        """, unsafe_allow_html=True)
+                            
+                            st.markdown(f"<div style='background:#f1f5f9; padding:10px; border-radius:8px; margin-top:15px; font-size:1rem; border-left:4px solid #3b82f6;'><b>5日累积: {s['t_5d']:+.2f}%</b> | 144日: <b>{s['t_144d']:+.1f}%</b> | 288日: <b>{s['t_288d']:+.1f}%</b></div>", unsafe_allow_html=True)
+                        with c3:
+                            if st.button("🗑️", key=f"del_{s['ticker']}"):
+                                st.session_state.my_sectors[s_name].remove(s['ticker']); save_config(); st.rerun()
+
+    with r_col:
+        st.subheader("🏆 战力排行榜")
+        rank_tabs = st.tabs(["日内", "5日", "144d", "🛡️ 护盘", "🎯 潜伏"])
+        rank_keys = [('change', '今日'), ('t_5d', '5日'), ('t_144d', '144d')]
+        
+        with st.container(height=900): 
+            for i, (key, label) in enumerate(rank_keys):
+                with rank_tabs[i]:
+                    sorted_m = sorted(m_res, key=lambda x: x[key], reverse=True)
+                    for j, item in enumerate(sorted_m):
+                        val_color = "#dc3545" if item[key] < 0 else "#28a745"
+                        c_rank, c_val = st.columns([3, 1])
+                        with c_rank:
+                            if st.button(f"{j+1}. {item['ticker']}", key=f"rk_{key}_{item['ticker']}"):
+                                st.session_state.selected_stock = item['ticker']
+                                st.session_state.current_page = "StockPage"
+                                st.rerun()
+                        with c_val:
+                            st.markdown(f"<div style='text-align:right; color:{val_color}; font-weight:bold; font-family: monospace; padding-top:6px;'>{item[key]:+.1f}%</div>", unsafe_allow_html=True)
+                        st.markdown("<hr style='margin:0; border:none; border-bottom:1px solid #f1f5f9;'>", unsafe_allow_html=True)
+            
+            with rank_tabs[3]:
+                sorted_def = sorted(m_res, key=lambda x: x['defense_rate'], reverse=True)
+                for j, item in enumerate(sorted_def):
+                    c_def = "#28a745" if item['defense_rate'] >= 60 else ("#854d0e" if item['defense_rate'] >= 40 else "#dc3545")
+                    c_rank, c_val = st.columns([3, 1])
+                    with c_rank:
+                        if st.button(f"{j+1}. {item['ticker']}", key=f"rk_def_{item['ticker']}"):
+                            st.session_state.selected_stock = item['ticker']
+                            st.session_state.current_page = "StockPage"
+                            st.rerun()
+                    with c_val:
+                        st.markdown(f"<div style='text-align:right; color:{c_def}; font-weight:bold; font-family: monospace; padding-top:6px;'>{item['defense_rate']:.0f}%</div>", unsafe_allow_html=True)
+                    st.markdown("<hr style='margin:0; border:none; border-bottom:1px solid #f1f5f9;'>", unsafe_allow_html=True)
+
+            with rank_tabs[4]:
+                sniper_list = []
+                for x in m_res:
+                    if x['ma_spread'] < 0.05: 
+                        score = 0
+                        if x['is_rs_strong']: score += 1
+                        if x['is_vol_dry']: score += 1
+                        if x['is_uptrend']: score += 1
+                        if x['defense_rate'] >= 60: score += 1
+                        
+                        if score >= 2:
+                            x['sniper_score'] = score
+                            sniper_list.append(x)
+                sniper_list = sorted(sniper_list, key=lambda x: (x['sniper_score'], x['defense_rate']), reverse=True)
+                
+                if not sniper_list: st.info("目前无满足条件的标的。")
+                else:
+                    for j, item in enumerate(sniper_list):
+                        c_rank, c_val = st.columns([2.5, 1.5])
+                        with c_rank:
+                            if st.button(f"🎯 {item['ticker']}", key=f"rk_coil_{item['ticker']}"):
+                                st.session_state.selected_stock = item['ticker']
+                                st.session_state.current_page = "StockPage"
+                                st.rerun()
+                        with c_val:
+                            st.markdown(f"<div style='text-align:right; color:#854d0e; font-size:0.8rem; padding-top:6px;'>{'⭐'*item['sniper_score']}</div>", unsafe_allow_html=True)
+                        st.markdown("<hr style='margin:0; border:none; border-bottom:1px solid #f1f5f9;'>", unsafe_allow_html=True)
