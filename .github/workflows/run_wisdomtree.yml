@@ -1,0 +1,33 @@
+name: Run WisdomTree Downloader
+
+# 这里的 workflow_dispatch 就是允许你手动点击按钮触发的开关！
+on:
+  workflow_dispatch: 
+
+jobs:
+  download-data:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 获取仓库代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Python 3.10 环境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: 安装依赖包和浏览器
+        run: |
+          pip install -r requirements.txt
+          python -m playwright install chromium
+
+      - name: 运行主程序下载数据 (2个并发求稳)
+        run: |
+          python download_holdings_v13_post_clean_switch.py -i "wisedom下载地址.txt" --downloader download_holdings_wisdomtree_v13_fixed.py --ignore-beijing-window --concurrency 1
+
+      - name: 打包并上传下载结果
+        uses: actions/upload-artifact@v4
+        with:
+          name: WisdomTree_Daily_Data
+          path: daily_system_output/
