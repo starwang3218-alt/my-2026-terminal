@@ -1,33 +1,110 @@
-name: Run WisdomTree Downloader
+name: Backfill iShares Holdings
 
-# 这里的 workflow_dispatch 就是允许你手动点击按钮触发的开关！
 on:
-  workflow_dispatch: 
+  workflow_dispatch:
+    inputs:
+      start_date:
+        description: "Start date, e.g. 2020-01-01"
+        required: true
+        default: "2020-01-01"
+      end_date:
+        description: "End date, e.g. 2020-12-31"
+        required: true
+        default: "2020-12-31"
+      url_file:
+        description: "iShares URL key file in repo"
+        required: true
+        default: "ishares_holding_urls.txt"
+      workers:
+        description: "Downloader workers"
+        required: true
+        default: "2"
+      weekdays_only:
+        description: "Use --weekdays-only"
+        required: true
+        type: choice
+        options:
+          - "true"
+          - "false"
+        default: "true"
+      cleanup_empty:
+        description: "Run iShares empty-template cleanup after download"
+        required: true
+        type: choice
+        options:
+          - "true"
+          - "false"
+        default: "true"
 
 jobs:
-  download-data:
+  download:
     runs-on: ubuntu-latest
+    timeout-minutes: 360
 
     steps:
-      - name: 获取仓库代码
+      - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: 设置 Python 3.10 环境
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: "3.11"
 
-      - name: 安装依赖包和浏览器
+      - name: Download iShares holdings
+        env:
+          PYTHONUNBUFFERED: "1" # 强制 Python 实时输出日志，避免控制台假死
+        shell: bash
         run: |
-          pip install -r requirements.txt
-          python -m playwright install chromium
+          set -euo pipefail
 
-      - name: 运行主程序下载数据 (2个并发求稳)
+          FLAGS=""
+          if [ "${{ inputs.weekdays_only }}" = "true" ]; then
+            FLAGS="$FLAGS --weekdays-only"
+          fi
+
+          # 增加了 -u 参数，并将 print-every 改为 1，方便排查是否被封 IP
+          python -u download_ishares_history.py \
+            --root "$GITHUB_WORKSPACE/out" \
+            --url-file "${{ inputs.url_file }}" \
+            --start "${{ inputs.start_date }}" \
+            --end "${{ inputs.end_date }}" \
+            --workers "${{ inputs.workers }}" \
+            --min-sleep 0.5 \
+            --max-sleep 2.0 \
+            --print-every 1 \
+            $FLAGS
+
+      - name: Cleanup empty iShares template files
+        if: ${{ always() && inputs.cleanup_empty == 'true' }}
+        shell: bash
         run: |
-          python download_holdings_v13_post_clean_switch.py -i "wisedom下载地址.txt" --downloader download_holdings_wisdomtree_v13_fixed.py --ignore-beijing-window --concurrency 1
+          set -euo pipefail
+          if [ -d "$GITHUB_WORKSPACE/out/data/vendors/ishares/raw" ]; then
+            python cleanup_ishares_empty_files_v2.py \
+              --root "$GITHUB_WORKSPACE/out" \
+              --max-bytes 12288 \
+              --delete
+          else
+            echo "No iShares raw directory found; skip cleanup."
+          fi
 
-      - name: 打包并上传下载结果
+      - name: Pack result even if previous step failed
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p package
+          if [ -d "$GITHUB_WORKSPACE/out/data/vendors/ishares" ]; then
+            cd "$GITHUB_WORKSPACE/out"
+            tar -czf "$GITHUB_WORKSPACE/package/ishares_${{ inputs.start_date }}_${{ inputs.end_date }}.tar.gz" data/vendors/ishares
+          else
+            echo "No downloaded files found." > "$GITHUB_WORKSPACE/package/NO_FILES_DOWNLOADED.txt"
+          fi
+
+      - name: Upload artifact even if previous step failed
+        if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: WisdomTree_Daily_Data
-          path: daily_system_output/
+          name: ishares_${{ inputs.start_date }}_${{ inputs.end_date }}
+          path: package/*
+          retention-days: 7
